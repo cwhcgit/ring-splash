@@ -38,7 +38,7 @@
   #rotate .ph{width:60px;height:100px;border:5px solid #fff;border-radius:12px;margin-bottom:24px;
     animation:rot 2s ease-in-out infinite}
   @keyframes rot{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}
-  @media (orientation:portrait){#rotate{display:flex}}
+  @media (orientation:portrait){body:not(.playing) #rotate{display:flex}}
   .hint{font-size:13px;opacity:.75}
 </style>
 </head>
@@ -53,7 +53,7 @@
        <b>Tilt</b> the phone to steer the rings. Hook every ring on a peg!</p>
     <div id="levels"></div>
     <button id="playBtn" class="big">Play</button>
-    <p class="hint">Keyboard: A / L pump · ← → tilt · Esc menu</p>
+    <p class="hint">Keyboard: A / L pump · hold ← → to turn the tank · Esc menu</p>
   </div>
 </div>
 
@@ -112,7 +112,7 @@ const LEVELS = [
 ];
 
 // floor: V-shaped valleys that funnel rings onto the nozzles
-const FLOOR = [[TANK.x, BOT-110],[NOZ[0], BOT],[TANK.x+TANK.w/2, BOT-150],[NOZ[1], BOT],[TANK.x+TANK.w, BOT-110]];
+const FLOOR = [[TANK.x, BOT-190],[NOZ[0], BOT],[TANK.x+TANK.w/2, BOT-230],[NOZ[1], BOT],[TANK.x+TANK.w, BOT-190]];
 function floorY(x){
   for (let i=0;i<FLOOR.length-1;i++){
     const a=FLOOR[i], b=FLOOR[i+1];
@@ -135,19 +135,27 @@ function persist(){ try { localStorage.setItem('ringsplash', JSON.stringify(save
 
 // ---------- Canvas ----------
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let scale=1, offX=0, offY=0, dpr=1;
+let scale=1, dpr=1, viewRot=0, VM = new DOMMatrix(), VMi = new DOMMatrix();
 function resize(){
   dpr = Math.min(2, window.devicePixelRatio || 1);
   cv.width = Math.round(innerWidth*dpr); cv.height = Math.round(innerHeight*dpr);
-  scale = Math.min(innerWidth/W, innerHeight/H);
-  offX = (innerWidth - W*scale)/2; offY = (innerHeight - H*scale)/2;
+  updateView();
 }
-addEventListener('resize', resize); resize();
+function updateView(){
+  viewRot = (((PRIMARY - screenAngle()) % 360) + 360) % 360;
+  const swap = viewRot % 180 !== 0;
+  const vw = swap ? innerHeight : innerWidth, vh = swap ? innerWidth : innerHeight;
+  scale = Math.min(vw/W, vh/H);
+  VM = new DOMMatrix().translate(innerWidth/2, innerHeight/2).rotate(viewRot).scale(scale).translate(-W/2, -H/2);
+  VMi = VM.inverse();
+}
+addEventListener('resize', resize);
 
 // ---------- State ----------
 let state = 'title', lvlIdx = 0, pegs = [], rings = [], bubbles = [];
 let t = 0, timer = 0, pumps = 0, settle = 0;
 const jets = [0,1].map(()=>({ held:false, s:0, p:1, empty:false }));
+let gx = 0, gy = G;
 let tilt = 0, keyTilt = 0, tiltOn = true, tiltFlip = false, soundOn = true;
 let rawAngle = 0, neutral = 0, haveMotion = false;
 const keys = {};
@@ -194,7 +202,8 @@ function updateHeld(){
 cv.addEventListener('pointerdown', e=>{
   e.preventDefault(); ensureAudio();
   if (state!=='play') return;
-  pointers.set(e.pointerId, e.clientX < innerWidth/2 ? 0 : 1);
+  const gp = VMi.transformPoint(new DOMPoint(e.clientX, e.clientY));
+  pointers.set(e.pointerId, gp.x < W/2 ? 0 : 1);
   try{ cv.setPointerCapture(e.pointerId); }catch(_){}
   updateHeld();
 });
@@ -209,6 +218,15 @@ addEventListener('keydown', e=>{
 });
 addEventListener('keyup', e=>{ const k = e.key.length===1 ? e.key.toLowerCase() : e.key; keys[k]=false; updateHeld(); });
 
+function wrapA(a){ return a - 2*Math.PI*Math.round(a/(2*Math.PI)); }
+function screenAngle(){
+  const a = (screen.orientation && typeof screen.orientation.angle==='number') ? screen.orientation.angle : (window.orientation||0);
+  return ((a%360)+360)%360;
+}
+// The game is glued to the device in its landscape-primary pose. Phones are
+// naturally portrait (landscape-primary = 90 deg); tablets/desktops are 0.
+const PRIMARY = (()=>{ const a = screenAngle(), wide = innerWidth > innerHeight;
+  const naturalPortrait = (a%180===0) ? !wide : wide; return naturalPortrait ? 90 : 0; })();
 let motionN = 0, orientN = 0, nativeN = 0, lastMotionT = 0, sensorSrc = 'none';
 function onMotion(e){
   const a = e.accelerationIncludingGravity;
@@ -230,17 +248,19 @@ function onOrient(e){
 window.ringSplashGravity = (x, y)=>{ nativeN++; lastMotionT = performance.now(); sensorSrc = 'native'; feedGravity(x, y); };
 function feedGravity(ax, ay){
   const a = { x: ax, y: ay };
-  const ang0 = (screen.orientation && typeof screen.orientation.angle==='number') ? screen.orientation.angle : (window.orientation||0);
-  const th = ang0*Math.PI/180;
+  const th = PRIMARY*Math.PI/180;
   const sx = a.x*Math.cos(th) - a.y*Math.sin(th);
   const su = a.x*Math.sin(th) + a.y*Math.cos(th);
-  const gx = -sx, gy = su;
-  if (Math.hypot(gx,gy) < 1.2) return;     // phone lying flat: keep last angle
-  const ang = Math.atan2(gx, gy);
-  rawAngle += (ang - rawAngle) * 0.3;
+  const sgx = -sx, sgy = su;
+  if (Math.hypot(sgx,sgy) < 1.2) return;   // phone lying flat: keep last angle
+  const ang = Math.atan2(sgx, sgy);
+  rawAngle = wrapA(rawAngle + wrapA(ang - rawAngle) * 0.3);
   haveMotion = true;
 }
 addEventListener('devicemotion', onMotion);
+resize();
+if (screen.orientation && screen.orientation.addEventListener) screen.orientation.addEventListener('change', resize);
+addEventListener('orientationchange', resize);
 addEventListener('deviceorientation', onOrient);
 
 async function startMotion(){
@@ -251,7 +271,7 @@ async function startMotion(){
 }
 async function goFullscreen(){
   try { if (!document.fullscreenElement && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen({navigationUI:'hide'}); } catch(e){}
-  try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch(e){}
+  try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape-primary'); } catch(e){}
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch(e){}
 }
 
@@ -300,16 +320,42 @@ function capture(r, p){
   try{ navigator.vibrate && navigator.vibrate(18); }catch(e){}
 }
 
+// half-size of a ring measured along direction (nx,ny), given how it's turned
+function extent(r, nx, ny){
+  const cs = Math.cos(r.rot), sn = Math.sin(r.rot);
+  const ry = TH + R*0.6*Math.abs(Math.sin(r.phi));
+  const a = nx*cs + ny*sn, b = -nx*sn + ny*cs;
+  return Math.sqrt(R*R*a*a + ry*ry*b*b);
+}
+// push a ring out of a surface (normal n points into the water) with friction:
+// the flatter it lies and the harder gravity presses it in, the more it grips
+function contact(r, nx, ny, pen, dt){
+  r.x += nx*pen; r.y += ny*pen;
+  const vn = r.vx*nx + r.vy*ny;
+  if (vn < 0){ r.vx -= vn*nx*1.1; r.vy -= vn*ny*1.1; }
+  const load = -(gx*nx + gy*ny);
+  if (load <= 0) return;
+  r.touch = Math.atan2(nx, -ny);
+  const flat = 1 - Math.abs(Math.sin(r.phi));            // 1 = full contact
+  const mu = 0.12 + 0.36*flat;
+  const tx = -ny, ty = nx, vt = r.vx*tx + r.vy*ty;
+  const keep = Math.max(0, Math.abs(vt) - mu*load*dt) * Math.exp(-3*flat*dt);
+  const dv = Math.sign(vt)*keep - vt;
+  r.vx += dv*tx; r.vy += dv*ty;
+}
+
 function step(dt){
   t += dt; timer += dt;
   for (const p of pegs) if (p.move) p.x = p.bx + p.move.amp*TANK.w*Math.sin(t*p.move.speed);
 
-  // tilt
-  let target = keyTilt;
-  if (tiltOn && haveMotion) target = Math.max(-0.95, Math.min(0.95, (rawAngle-neutral)*1.3*(tiltFlip?-1:1)));
-  if (keys.ArrowLeft) target = -0.6; else if (keys.ArrowRight) target = 0.6;
-  tilt += (target - tilt) * Math.min(1, dt*10);
-  const gx = Math.sin(tilt)*G*1.25, gy = Math.cos(tilt)*G;
+  // tilt: full 360 deg. Gravity always points at the real ground.
+  const kb = keys.ArrowLeft || keys.ArrowRight;
+  if (keys.ArrowLeft) keyTilt -= dt*2.2; else if (keys.ArrowRight) keyTilt += dt*2.2;
+  else keyTilt -= wrapA(keyTilt)*Math.min(1, dt*2.5);
+  keyTilt = wrapA(keyTilt);
+  const target = (tiltOn && haveMotion && !kb) ? wrapA((rawAngle-neutral)*(tiltFlip?-1:1)) : keyTilt;
+  tilt = wrapA(tilt + wrapA(target - tilt)*Math.min(1, dt*12));
+  gx = Math.sin(tilt)*G; gy = Math.cos(tilt)*G;
 
   // jets / pump pressure
   for (const j of jets){
@@ -322,70 +368,101 @@ function step(dt){
 
   for (const r of rings){
     r.py = r.y;
-    let ax = r.peg ? 0 : gx, ay = gy;
+    // gentle water currents: every ring drifts and bobs a little, even at rest
+    let ax = gx + 55*Math.sin(t*0.9 + r.seed) + 35*Math.sin(t*2.3 + r.seed*1.7);
+    let ay = gy + 45*Math.sin(t*1.3 + r.seed*2.1);
+    r.vphi += Math.sin(t*1.7 + r.seed*3)*0.8*dt;
     for (let k=0;k<2;k++){
       const j = jets[k]; if (j.s < 0.01) continue;
       const dy = BOT - r.y; if (dy < 0) continue;
       const w = 70 + dy*0.42, dx = r.x - NOZ[k];
       const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
-      const f = j.s*inf*JET*(r.peg?0.75:1);
+      const f = j.s*inf*JET*(r.peg?0.8:1);
       ay -= f;
-      if (!r.peg){
-        ax += (dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22;
-        r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
-      }
+      ax += ((dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22) * (r.peg?0.4:1);
+      if (!r.peg) r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
     }
-    if (!r.peg && r.y + TH >= floorY(r.x) - 2) ax += floorSlope(r.x)*G*1.6;
     r.vx += ax*dt; r.vy += ay*dt;
     const d = Math.exp(-DRAG*dt); r.vx *= d; r.vy *= d;
     r.x += r.vx*dt; r.y += r.vy*dt;
 
     // tumble: flat (phi=0 or pi) is stable
     r.vphi += -Math.sin(2*r.phi)*5*dt; r.vphi *= Math.exp(-2.5*dt); r.phi += r.vphi*dt;
-    if (r.peg){ r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*8); r.vphi*=0.8; }
-    const rt = Math.max(-0.35, Math.min(0.35, r.vx*0.0022 + (r.peg?0:tilt*0.25)));
-    r.rot += (rt - r.rot)*Math.min(1, dt*5);
+    if (r.peg){ r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*6); }
 
-    // walls / ceiling / floor
-    if (r.x < TANK.x+R){ r.x = TANK.x+R; r.vx = Math.abs(r.vx)*0.3; }
-    if (r.x > TANK.x+TANK.w-R){ r.x = TANK.x+TANK.w-R; r.vx = -Math.abs(r.vx)*0.3; }
-    if (r.y < TANK.y+TH+6){ r.y = TANK.y+TH+6; r.vy = Math.abs(r.vy)*0.2; }
-    const fy = floorY(r.x);
-    if (r.y + TH > fy){ r.y = fy - TH; if (r.vy>0) r.vy *= -0.15; }
+    // tank walls, ceiling and floor, with friction
+    r.touch = null;
+    let pen = extent(r,1,0) - (r.x - TANK.x);            if (pen > 0) contact(r, 1, 0, pen, dt);
+    pen = extent(r,-1,0) - (TANK.x + TANK.w - r.x);      if (pen > 0) contact(r,-1, 0, pen, dt);
+    pen = extent(r,0,1) - (r.y - TANK.y);                if (pen > 0) contact(r, 0, 1, pen, dt);
+    for (let i=0;i<FLOOR.length-1;i++){
+      const a = FLOOR[i], b = FLOOR[i+1];
+      const sx = b[0]-a[0], sy = b[1]-a[1], L2 = sx*sx+sy*sy;
+      const u = Math.max(0, Math.min(1, ((r.x-a[0])*sx + (r.y-a[1])*sy)/L2));
+      const cx = a[0]+sx*u, cy = a[1]+sy*u;
+      let nx = r.x-cx, ny = r.y-cy, dist = Math.hypot(nx,ny);
+      const L = Math.sqrt(L2), lnx = sy/L, lny = -sx/L;   // face normal, into the water
+      if (u > 0 && u < 1){                                // over the face: signed distance
+        dist = nx*lnx + ny*lny; nx = lnx; ny = lny;
+      } else {                                            // past an end: round corner
+        if (dist < 0.01) continue;
+        nx /= dist; ny /= dist;
+        if (nx*lnx + ny*lny < 0) continue;                // behind this face: the next one handles it
+      }
+      pen = extent(r,nx,ny) - dist;
+      if (pen > 0) contact(r, nx, ny, pen, dt);
+    }
+
+    // in-plane angle: threaded rings sit square on the peg, rings resting on
+    // a surface lie along it, and sinking rings settle across the gravity
+    let rt, rk;
+    if (r.peg){ rt = 0; rk = 8; }
+    else if (r.touch != null){ rt = r.touch; rk = 10; }
+    else { rt = -tilt + r.vx*0.0015; rk = 3; }
+    let dr = rt - r.rot; dr -= Math.PI*Math.round(dr/Math.PI);
+    r.rot += dr*Math.min(1, dt*rk);
 
     // pegs
     for (const p of pegs){
       if (r.peg === p){
-        const lim = HOLE - PEGW - 2;
-        r.x = p.x + Math.max(-lim, Math.min(lim, (r.x - p.x)*0.85));
-        r.vx = 0;
-        if (r.y < p.tipY - 6) r.peg = null;      // blown off the top
+        // free to slide along the peg and rattle within the hole's
+        // clearance; it comes off the tip if pushed or tipped past it
+        const lim = HOLE - PEGW - 2, rel = r.x - p.x;
+        if (Math.abs(rel) > lim){ r.x = p.x + Math.sign(rel)*lim; if (Math.sign(r.vx)===Math.sign(rel)) r.vx = 0; }
+        if (r.y < p.tipY - 6) r.peg = null;
         continue;
       }
       if (r.peg) continue;
       const dx = r.x - p.x, adx = Math.abs(dx);
-      const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.7;
+      const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.7 && Math.abs(Math.sin(r.rot)) < 0.5;
+      const exh = extent(r,1,0), exv = extent(r,0,1);
       if (ok && adx < CATCH && r.py <= p.tipY && r.y > p.tipY){ capture(r,p); continue; }
-      if (adx < R + PEGW && r.y > p.tipY - TH - 2 && r.y < p.baseY + TH){
+      if (adx < exh + PEGW && r.y > p.tipY - exv && r.y < p.baseY + exv){
+        // An unthreaded ring can never be held up by a peg: the tip is a
+        // single point, so the ring tips over and slides off it, then falls
+        // freely beside the peg.
         const dir = Math.sign(dx) || (Math.random()<.5?-1:1);
-        if (ok && adx < CATCH && r.y <= p.tipY) { /* threading in progress */ }
-        else if (r.py <= p.tipY + 4 && r.y <= p.tipY + 14){
-          // ring body resting on the tip: slide off
-          r.y = Math.min(r.y, p.tipY - TH); if (r.vy>0) r.vy = 0;
-          r.vx += dir*900*dt;
-          r.vphi += dir*2*dt;
-        } else if (r.y > p.tipY){
-          r.x = p.x + dir*(R+PEGW);
-          if (Math.sign(r.vx)!==dir) r.vx = dir*Math.abs(r.vx)*0.3;
+        if (!(ok && adx < CATCH && r.y <= p.tipY + 2)){
+          const need = exh + PEGW - adx;
+          const nearTip = r.y < p.tipY + exv;
+          r.x += dir * (nearTip ? Math.min(need, 650*dt) : need);
+          if (Math.sign(r.vx) !== dir) r.vx = dir*Math.abs(r.vx)*0.3;
+          if (nearTip){ r.vx += dir*500*dt; r.vphi += dir*4*dt; }
         }
       }
       // pedestal dome
       const pcx = p.x, pcy = p.baseY + 30, pr = 34;
-      const ex = r.x - pcx, ey = (r.y - pcy)*K, dd = Math.hypot(ex,ey), mn = R + pr;
+      const cs = Math.cos(r.rot), sn = Math.sin(r.rot);
+      const wx = r.x - pcx, wy = r.y - pcy;
+      const lx = wx*cs + wy*sn, ly = (-wx*sn + wy*cs)*K, dd = Math.hypot(lx,ly), mn = R + pr;
+      const ex = wx;
       if (dd < mn && dd > 0.01){
-        const nx = ex/dd, ny = ey/dd, o = mn - dd;
-        r.x += nx*o; r.y += ny*o/K;
+        const o = mn - dd, ox = lx/dd*o, oy = ly/dd*o/K;
+        r.x += ox*cs - oy*sn; r.y += ox*sn + oy*cs;
+        const nl = Math.hypot(r.x-pcx, r.y-pcy) || 1, nx = (r.x-pcx)/nl, ny = (r.y-pcy)/nl;
         const vn = r.vx*nx + r.vy*ny; if (vn<0){ r.vx -= vn*nx*1.2; r.vy -= vn*ny*1.2; }
+        // an unthreaded ring can only touch the dome off-centre: let it slip off
+        r.vx += (Math.sign(ex) || 1)*1100*dt; r.vphi += (Math.sign(ex)||1)*2*dt;
       }
     }
   }
@@ -395,7 +472,9 @@ function step(dt){
     const st = rings.filter(r=>r.peg===p).sort((a,b)=>b.y-a.y);
     let lvl = p.baseY - TH;
     for (const r of st){
-      if (r.y > lvl){ r.y = lvl; if (r.vy>0) r.vy = 0; }
+      const cushion = lvl - (2.5 + 2.5*Math.sin(t*1.6 + r.seed));
+      if (r.y > cushion){ r.y += (cushion - r.y)*Math.min(1, DT*14); if (r.vy > 0) r.vy *= 0.6; }
+      if (r.y > lvl + 2){ r.y = lvl + 2; if (r.vy > 0) r.vy = 0; }
       lvl = r.y - TH*1.75;
     }
   }
@@ -404,11 +483,19 @@ function step(dt){
   for (let i=0;i<rings.length;i++) for (let k=i+1;k<rings.length;k++){
     const a = rings[i], b = rings[k];
     if (a.peg && b.peg) continue;
-    const dx = b.x - a.x, dy = (b.y - a.y)*K, d = Math.hypot(dx,dy), mn = 2*R*0.86;
+    const fr = a.peg ? a.rot : b.peg ? b.rot : (a.rot + b.rot)/2;
+    const cs = Math.cos(fr), sn = Math.sin(fr);
+    const wx = b.x - a.x, wy = b.y - a.y;
+    const lx = wx*cs + wy*sn, ly = (-wx*sn + wy*cs)*K, d = Math.hypot(lx,ly), mn = 2*R*0.86;
     if (d >= mn || d < 0.001) continue;
-    const nx = dx/d, ny = dy/d, o = mn - d;
+    const o = mn - d, ox = lx/d*o, oy = ly/d*o/K;
+    const px = ox*cs - oy*sn, py = ox*sn + oy*cs;
     const wa = a.peg ? 0 : (b.peg ? 1 : 0.5), wb = 1 - wa;
-    a.x -= nx*o*wa; a.y -= ny*o*wa/K; b.x += nx*o*wb; b.y += ny*o*wb/K;
+    a.x -= px*wa; a.y -= py*wa; b.x += px*wb; b.y += py*wb;
+    const pl = Math.hypot(px,py) || 1, nx = px/pl, ny = py/pl;
+    // a loose ring touching a threaded stack slips off it instead of perching
+    if (a.peg && !b.peg) b.vx += (Math.sign(b.x-a.x)||1)*900*DT;
+    if (b.peg && !a.peg) a.vx += (Math.sign(a.x-b.x)||1)*900*DT;
     const rv = (b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
     if (rv < 0){ const imp = -rv*0.6; a.vx -= nx*imp*wa*2; a.vy -= ny*imp*wa*2; b.vx += nx*imp*wb*2; b.vy += ny*imp*wb*2; }
   }
@@ -485,7 +572,8 @@ function drawPedestal(p){
 function draw(){
   ctx.setTransform(1,0,0,1,0,0);
   ctx.fillStyle = '#2a0f1c'; ctx.fillRect(0,0,cv.width,cv.height);
-  ctx.setTransform(dpr*scale,0,0,dpr*scale,dpr*offX,dpr*offY);
+  if ((((PRIMARY - screenAngle()) % 360) + 360) % 360 !== viewRot) updateView();
+  ctx.setTransform(dpr*VM.a, dpr*VM.b, dpr*VM.c, dpr*VM.d, dpr*VM.e, dpr*VM.f);
 
   // casing
   const cg = ctx.createLinearGradient(0,0,0,H);
@@ -568,7 +656,7 @@ function draw(){
   ctx.fillStyle='rgba(0,0,0,.25)'; rr(lx-110,ly-13,220,26,13); ctx.fill();
   ctx.fillStyle='#d8ff7a'; rr(lx-106,ly-9,212,18,9); ctx.fill();
   ctx.fillStyle='rgba(255,255,255,.9)';
-  ctx.beginPath(); ctx.ellipse(lx - tilt/0.95*88, ly, 16, 7, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(lx - Math.max(-1, Math.min(1, tilt/1.2))*88, ly, 16, 7, 0, 0, Math.PI*2); ctx.fill();
   if (!haveMotion && tiltOn){
     ctx.fillStyle='rgba(255,255,255,.8)'; ctx.font='700 18px system-ui,sans-serif'; ctx.textAlign='left';
     ctx.fillText('no tilt sensor', lx+124, ly);
@@ -615,14 +703,14 @@ function startLevel(i){
   ensureAudio(); startMotion(); goFullscreen();
   loadLevel(i);
   pointers.clear(); jets.forEach(j=>j.held=false);
-  state='play'; acc=0;
+  state='play'; acc=0; document.body.classList.add('playing');
   show('title',false); show('win',false); show('menu',false); show('menuBtn',true);
 }
 function openMenu(){
   if (state!=='play') return;
-  state='paused'; pointers.clear(); updateHeld(); refreshMenu(); show('menu',true);
+  state='paused'; document.body.classList.remove('playing'); pointers.clear(); updateHeld(); refreshMenu(); show('menu',true);
 }
-function closeMenu(){ state='play'; last=performance.now(); show('menu',false); }
+function closeMenu(){ document.body.classList.add('playing'); state='play'; last=performance.now(); show('menu',false); }
 function refreshMenu(){
   $('tiltBtn').textContent = 'Tilt: ' + (tiltOn?'On':'Off');
   $('soundBtn').textContent = 'Sound: ' + (soundOn?'On':'Off');
@@ -637,7 +725,7 @@ function updateSensorInfo(){
 }
 setInterval(()=>{ if (state==='paused') updateSensorInfo(); }, 300);
 function winLevel(){
-  state='win'; show('menuBtn',false);
+  state='win'; show('menuBtn',false); document.body.classList.remove('playing');
   const st = starsFor(lvlIdx, timer);
   save.best[lvlIdx] = Math.max(save.best[lvlIdx]||0, st);
   save.unlocked = Math.max(save.unlocked, Math.min(LEVELS.length, lvlIdx+2));
@@ -651,7 +739,7 @@ function winLevel(){
   [0,1,2].forEach(i=>plink(880*Math.pow(1.26,i), i*0.13, 0.22));
   show('win',true);
 }
-function toTitle(){ state='title'; buildLevels(); show('menu',false); show('win',false); show('menuBtn',false); show('title',true); }
+function toTitle(){ document.body.classList.remove('playing'); state='title'; buildLevels(); show('menu',false); show('win',false); show('menuBtn',false); show('title',true); }
 
 $('playBtn').onclick = ()=>startLevel(Math.min(save.unlocked-1, LEVELS.length-1));
 $('menuBtn').onclick = openMenu;
@@ -672,7 +760,7 @@ loadLevel(0); buildLevels();
 requestAnimationFrame(frame);
 
 // test hook
-window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, loadLevel, startLevel, step, landedCount };
+window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, loadLevel, startLevel, step, landedCount };
 </script>
 </body>
 </html>
