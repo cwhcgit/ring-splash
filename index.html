@@ -181,7 +181,7 @@ function loadLevel(i){
     const col = m==null ? RCOL[(n++)%RCOL.length] : PEGCOL[m];
     const side = k%2;
     return { x: NOZ[side] + (Math.random()-.5)*160, y: BOT-TH-20-Math.floor(k/2)*34,
-      vx:0, vy:0, py:0, phi:(Math.random()-.5)*.4, vphi:0, rot:0,
+      vx:0, vy:0, py:0, phi:(Math.random()-.5)*.4, vphi:0, rot:0, w:0, touching:0,
       match:m, col, dark:shade(col,.62), peg:null, seed:Math.random()*100 };
   });
   t=0; timer=0; pumps=0; settle=0; bubbles=[];
@@ -324,36 +324,249 @@ function updateAudio(){
 
 // ---------- Simulation ----------
 function capture(r, p){
-  r.peg = p; r.vx = 0;
+  r.peg = p;
   plink(700 + Math.random()*500);
   try{ navigator.vibrate && navigator.vibrate(18); }catch(e){}
 }
 
-// half-size of a ring measured along direction (nx,ny), given how it's turned
-function extent(r, nx, ny){
-  const cs = Math.cos(r.rot), sn = Math.sin(r.rot);
-  const ry = TH + R*0.6*Math.abs(Math.sin(r.phi));
-  const a = nx*cs + ny*sn, b = -nx*sn + ny*cs;
-  return Math.sqrt(R*R*a*a + ry*ry*b*b);
+// ---------- Rigid-body ring physics ----------
+// Each ring is a capsule in the game plane: a core segment along its own axis
+// with rounded ends of radius h. h is the ring's thickness seen side-on: thin
+// when it lies flat, a full circle when it faces you. Rings have mass, spin and
+// a centre of gravity; every contact point pushes and grips at its own spot, so
+// rings topple, pivot on peg tips and lever each other naturally.
+const I_RING = 1.0*R*R;          // rotational inertia, including the water it drags along
+const INV_I = 1/I_RING;
+const MAXT = 0.12;               // how far a threaded ring can cock on its peg (rad)
+const SLOP = 0.4;
+let contacts = [];
+
+function shape(r){
+  const h = TH + (R-TH)*Math.abs(Math.sin(r.phi));
+  const a = Math.max(0, R-h), c = Math.cos(r.rot)*a, s = Math.sin(r.rot)*a;
+  return { h, x0:r.x-c, y0:r.y-s, x1:r.x+c, y1:r.y+s };
 }
-// push a ring out of a surface (normal n points into the water) with friction:
-// the flatter it lies and the harder gravity presses it in, the more it grips
-function contact(r, nx, ny, pen, dt){
-  if (pen > 0){ r.x += nx*pen; r.y += ny*pen; }          // within 2px still counts as touching
-  const vn = r.vx*nx + r.vy*ny;
-  if (vn < 0){ r.vx -= vn*nx*1.1; r.vy -= vn*ny*1.1; }
-  const load = -(gx*nx + gy*ny);
-  if (load <= 0) return;
-  r.touch = Math.atan2(nx, -ny);
-  const flat = 1 - Math.abs(Math.sin(r.phi));            // 1 = full contact
-  const tx = -ny, ty = nx, vt = r.vx*tx + r.vy*ty;
-  const pull = gx*tx + gy*ty;                              // gravity along the surface
-  const muS = 0.25 + 0.6*flat;                             // grip at rest: flat ~40 deg
-  const muK = 0.12 + 0.38*flat;                            // once sliding
-  let dv;
-  if (Math.abs(vt) < 10 && Math.abs(pull) <= muS*load) dv = -vt;   // stays put
-  else dv = Math.sign(vt)*Math.max(0, Math.abs(vt) - muK*load*dt) * Math.exp(-3*flat*dt) - vt;
-  r.vx += dv*tx; r.vy += dv*ty;
+function closestOnSeg(px,py,x0,y0,x1,y1){
+  const dx=x1-x0, dy=y1-y0, L2=dx*dx+dy*dy;
+  const u = L2>1e-9 ? Math.max(0,Math.min(1,((px-x0)*dx+(py-y0)*dy)/L2)) : 0;
+  return [x0+dx*u, y0+dy*u, u];
+}
+function clamp01(v){ return v<0?0:v>1?1:v; }
+// closest points between segments a0-a1 and b0-b1
+function segSeg(a0x,a0y,a1x,a1y,b0x,b0y,b1x,b1y){
+  const d1x=a1x-a0x, d1y=a1y-a0y, d2x=b1x-b0x, d2y=b1y-b0y, rx=a0x-b0x, ry=a0y-b0y;
+  const a=d1x*d1x+d1y*d1y, e=d2x*d2x+d2y*d2y, f=d2x*rx+d2y*ry;
+  let s, u;
+  if (a<=1e-9 && e<=1e-9){ s=0; u=0; }
+  else if (a<=1e-9){ s=0; u=clamp01(f/e); }
+  else {
+    const c=d1x*rx+d1y*ry;
+    if (e<=1e-9){ u=0; s=clamp01(-c/a); }
+    else {
+      const b=d1x*d2x+d1y*d2y, den=a*e-b*b;
+      s = den>1e-9 ? clamp01((b*f-c*e)/den) : 0;
+      u = (b*s+f)/e;
+      if (u<0){ u=0; s=clamp01(-c/a); } else if (u>1){ u=1; s=clamp01((b-c)/a); }
+    }
+  }
+  return [a0x+d1x*s, a0y+d1y*s, b0x+d2x*u, b0y+d2y*u];
+}
+// grip of a ring: lying flat it has full contact and grips hard; on its edge it slips
+function gripOf(r){ return 0.3 + 0.6*(1 - Math.abs(Math.sin(r.phi))); }
+// n points from b (or the static surface) into ring a
+function addContact(a, b, px, py, nx, ny, pen, mu, bvx, bvy){
+  if (pen < -3) return;
+  contacts.push({ a, b, px, py, nx, ny, pen, mu, bvx: bvx||0, bvy: bvy||0, jn:0, jt:0 });
+}
+function bobGap(r){ return 3 + 3*Math.sin(t*1.4 + r.seed); }   // threaded rings float on a cushion of water
+
+function ringVsStatic(r, S){
+  const mu = gripOf(r), ends = [[S.x0,S.y0],[S.x1,S.y1]];
+  for (const [ex,ey] of ends){
+    addContact(r, null, TANK.x, ey, 1, 0, S.h - (ex - TANK.x), mu);
+    addContact(r, null, TANK.x+TANK.w, ey, -1, 0, S.h - (TANK.x+TANK.w - ex), mu);
+    addContact(r, null, ex, TANK.y, 0, 1, S.h - (ey - TANK.y), mu);
+    for (let i=0;i<FLOOR.length-1;i++){
+      const A = FLOOR[i], B = FLOOR[i+1];
+      const [qx,qy,u] = closestOnSeg(ex,ey,A[0],A[1],B[0],B[1]);
+      const L = Math.hypot(B[0]-A[0], B[1]-A[1]), lnx = (B[1]-A[1])/L, lny = -(B[0]-A[0])/L;
+      let nx = ex-qx, ny = ey-qy, dist;
+      if (u>0 && u<1){ dist = nx*lnx + ny*lny; nx = lnx; ny = lny; }
+      else { dist = Math.hypot(nx,ny); if (dist<0.01) continue; nx/=dist; ny/=dist; if (nx*lnx+ny*lny < 0) continue; }
+      addContact(r, null, qx, qy, nx, ny, S.h - dist, mu);
+    }
+  }
+  // the hump's peak poking into the middle of a ring
+  const V = FLOOR[2], [qx,qy] = closestOnSeg(V[0],V[1],S.x0,S.y0,S.x1,S.y1);
+  const d = Math.hypot(qx-V[0], qy-V[1]);
+  if (d > 0.01 && qy < V[1]) addContact(r, null, V[0], V[1], (qx-V[0])/d, (qy-V[1])/d, S.h - d, mu);
+}
+
+function ringVsPegs(r, S){
+  for (const p of pegs){
+    // pedestal dome: also the floor a threaded stack rests on
+    const pcx = p.x, pcy = p.baseY + 30, pr = 32;
+    {
+      const [qx,qy] = closestOnSeg(pcx,pcy,S.x0,S.y0,S.x1,S.y1);
+      const d = Math.hypot(qx-pcx, qy-pcy) || 0.01, nx = (qx-pcx)/d, ny = (qy-pcy)/d;
+      const pen = S.h + pr - d - (r.peg===p ? bobGap(r) : 0);
+      addContact(r, null, pcx+nx*pr, pcy+ny*pr, nx, ny, pen, 0.12, p.vx, 0);   // round, smooth dome
+    }
+    if (r.peg === p) continue;                       // the peg runs through the hole
+    const dx = r.x - p.x;
+    const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.6 && Math.abs(Math.sin(r.rot)) < 0.35;
+    if (!r.peg && ok && Math.abs(dx) < CATCH && r.y < p.tipY + 4) continue;   // lined up: let it thread
+    const [c1x,c1y,c2x,c2y] = segSeg(S.x0,S.y0,S.x1,S.y1, p.x,p.tipY, p.x,p.baseY);
+    let nx = c1x-c2x, ny = c1y-c2y, d = Math.hypot(nx,ny);
+    if (d < 0.01){ nx = Math.sign(dx)||1; ny = 0; } else { nx/=d; ny/=d; }
+    addContact(r, null, c2x+nx*PEGW, c2y+ny*PEGW, nx, ny, S.h + PEGW - d, 0.05, p.vx, 0);   // polished peg: nothing leans on it
+  }
+}
+
+function ringVsRing(A, SA, B, SB){
+  const mu = (A.peg && A.peg===B.peg) ? 0.08 : Math.sqrt(gripOf(A)*gripOf(B));   // a stack floats freely
+  const gap = (A.peg && A.peg===B.peg) ? bobGap(A.y < B.y ? A : B) : 0;
+  let found = false;
+  const test = (P, SP, Q, SQ)=>{
+    for (const [ex,ey] of [[SP.x0,SP.y0],[SP.x1,SP.y1]]){
+      const [qx,qy] = closestOnSeg(ex,ey,SQ.x0,SQ.y0,SQ.x1,SQ.y1);
+      const d = Math.hypot(ex-qx, ey-qy); if (d < 0.01) continue;
+      const nx = (ex-qx)/d, ny = (ey-qy)/d, pen = SP.h + SQ.h - d - gap;
+      if (pen > -3){ addContact(P, Q, qx+nx*SQ.h, qy+ny*SQ.h, nx, ny, pen, mu); found = true; }
+    }
+  };
+  test(A,SA,B,SB); test(B,SB,A,SA);
+  if (!found){   // crossing in an X: cores closest somewhere in the middle
+    const [c1x,c1y,c2x,c2y] = segSeg(SA.x0,SA.y0,SA.x1,SA.y1,SB.x0,SB.y0,SB.x1,SB.y1);
+    const d = Math.hypot(c1x-c2x, c1y-c2y);
+    if (d > 0.01) addContact(A, B, c2x+(c1x-c2x)/d*SB.h, c2y+(c1y-c2y)/d*SB.h, (c1x-c2x)/d, (c1y-c2y)/d, SA.h+SB.h-d-gap, mu);
+  }
+}
+
+function applyImpulse(r, rx, ry, jx, jy, sign){
+  r.vx += sign*jx; r.vy += sign*jy;
+  r.w += sign*INV_I*(rx*jy - ry*jx);
+}
+function solveContacts(dt, iters){
+  for (const c of contacts){
+    const a = c.a, b = c.b;
+    c.rax = c.px - a.x; c.ray = c.py - a.y;
+    const tx = -c.ny, ty = c.nx; c.tx = tx; c.ty = ty;
+    let kn = 1 + INV_I*Math.pow(c.rax*c.ny - c.ray*c.nx, 2);
+    let kt = 1 + INV_I*Math.pow(c.rax*ty - c.ray*tx, 2);
+    if (b){ c.rbx = c.px - b.x; c.rby = c.py - b.y;
+      kn += 1 + INV_I*Math.pow(c.rbx*c.ny - c.rby*c.nx, 2);
+      kt += 1 + INV_I*Math.pow(c.rbx*ty - c.rby*tx, 2); }
+    c.kn = kn; c.kt = kt;
+    c.vtarget = c.pen < 0 ? c.pen/dt : 0;      // a gap may close, but no further
+  }
+  for (let it=0; it<iters; it++){
+    for (const c of contacts){
+      const a = c.a, b = c.b;
+      const rel = ()=>{
+        let vx = a.vx - a.w*c.ray, vy = a.vy + a.w*c.rax;
+        if (b){ vx -= b.vx - b.w*c.rby; vy -= b.vy + b.w*c.rbx; } else { vx -= c.bvx; vy -= c.bvy; }
+        return [vx, vy];
+      };
+      let [vx,vy] = rel();
+      const vn = vx*c.nx + vy*c.ny;
+      let dj = (c.vtarget - vn)/c.kn;
+      const jn = Math.max(0, c.jn + dj); dj = jn - c.jn; c.jn = jn;
+      if (dj){ applyImpulse(a, c.rax, c.ray, dj*c.nx, dj*c.ny, 1); if (b) applyImpulse(b, c.rbx, c.rby, dj*c.nx, dj*c.ny, -1); }
+      [vx,vy] = rel();
+      const vt = vx*c.tx + vy*c.ty, mx = c.mu*c.jn;
+      let dt2 = -vt/c.kt;
+      const jt = Math.max(-mx, Math.min(mx, c.jt + dt2)); dt2 = jt - c.jt; c.jt = jt;
+      if (dt2){ applyImpulse(a, c.rax, c.ray, dt2*c.tx, dt2*c.ty, 1); if (b) applyImpulse(b, c.rbx, c.rby, dt2*c.tx, dt2*c.ty, -1); }
+    }
+  }
+}
+
+function stepRings(dt){
+  for (const p of pegs){ p.vx = (p.x - (p.px==null ? p.x : p.px))/dt; p.px = p.x; }
+
+  // forces: gravity, water currents, jets, drag
+  for (const r of rings){
+    r.py = r.y;
+    let ax = gx + 55*Math.sin(t*0.9 + r.seed) + 35*Math.sin(t*2.3 + r.seed*1.7);
+    let ay = gy + 45*Math.sin(t*1.3 + r.seed*2.1);
+    r.w += Math.sin(t*1.1 + r.seed*1.3)*0.3*dt;
+    r.vphi += Math.sin(t*1.7 + r.seed*3)*0.8*dt;
+    for (let k=0;k<2;k++){
+      const j = jets[k]; if (j.s < 0.01) continue;
+      const dy = BOT - r.y; if (dy < 0) continue;
+      const w = 105 + dy*0.38, dx = r.x - NOZ[k];
+      const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
+      const f = j.s*inf*JET*(r.peg?0.8:1);
+      ay -= f;
+      ax += ((dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22) * (r.peg?0.4:1);
+      r.w += ((dx/w)*3 + (Math.random()-0.5)*20) * j.s*inf*dt;   // the jet hits one side harder
+      if (!r.peg) r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
+    }
+    r.vx += ax*dt; r.vy += ay*dt;
+    const d = Math.exp(-DRAG*dt); r.vx *= d; r.vy *= d;
+    // sinking through water, a ring drifts toward falling broadside
+    const sp = Math.hypot(r.vx, r.vy);
+    r.w += -Math.sin(2*(r.rot + tilt))*sp*0.012*dt;
+    // A real ring is round: standing up on its rim (axis along gravity), its
+    // centre of gravity is never quite over the contact, so it leans over
+    // toward lying down. Stronger while it rests on something.
+    if (!r.peg){
+      let rel = r.rot + tilt; rel -= Math.PI*Math.round(rel/Math.PI);       // 0 = lying across gravity
+      const up = Math.abs(rel);                                              // pi/2 = standing up
+      if (up > 0.6){
+        const dir = Math.sign(rel) || (r.seed > 50 ? 1 : -1);
+        r.w += -dir*(r.touching ? 7 : 1.5)*Math.sin(up)*dt;
+      }
+    }
+    r.w *= Math.exp(-2.5*dt);
+  }
+
+  // contacts
+  contacts = [];
+  const shapes = rings.map(shape);
+  rings.forEach((r,i)=>{ ringVsStatic(r, shapes[i]); ringVsPegs(r, shapes[i]); });
+  for (let i=0;i<rings.length;i++) for (let k=i+1;k<rings.length;k++){
+    const A = rings[i], B = rings[k];
+    if (Math.abs(A.x-B.x) > 2*R+10 || Math.abs(A.y-B.y) > 2*R+10) continue;
+    ringVsRing(A, shapes[i], B, shapes[k]);
+  }
+  solveContacts(dt, 10);
+
+  // move
+  for (const r of rings){ r.x += r.vx*dt; r.y += r.vy*dt; r.rot += r.w*dt; r.touching = 0; }
+
+  // push apart anything still overlapping (position only, adds no bounce)
+  for (const c of contacts){
+    if (c.jn > 0) c.a.touching++;
+    if (c.pen <= SLOP) continue;
+    const corr = (c.pen - SLOP)*0.45, share = c.b ? 0.5 : 1;
+    c.a.x += c.nx*corr*share; c.a.y += c.ny*corr*share;
+    if (c.b){ c.b.x -= c.nx*corr*share; c.b.y -= c.ny*corr*share; }
+  }
+
+  for (const r of rings){
+    // front-to-back tumble: lying flat is stable, standing face-on topples,
+    // and much faster when it's resting on something
+    const k = r.touching ? 16 : 5;
+    r.vphi += -Math.sin(2*r.phi)*k*dt; r.vphi *= Math.exp(-2.5*dt); r.phi += r.vphi*dt;
+    if (r.peg) r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*6);
+
+    if (r.peg){
+      // the peg runs through the hole: it can slide along the peg, rattle in
+      // the hole's clearance and cock a little, and comes off past the tip
+      const p = r.peg, lim = HOLE - PEGW - 2, rel = r.x - p.x;
+      if (Math.abs(rel) > lim){ r.x = p.x + Math.sign(rel)*lim; if (Math.sign(r.vx - p.vx)===Math.sign(rel)) r.vx = p.vx; }
+      const dr = r.rot - Math.PI*Math.round(r.rot/Math.PI);
+      if (Math.abs(dr) > MAXT){ r.rot -= dr - Math.sign(dr)*MAXT; if (Math.sign(r.w)===Math.sign(dr)) r.w = 0; }
+      if (r.y < p.tipY - 6) r.peg = null;
+    } else {
+      for (const p of pegs){
+        const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.6 && Math.abs(Math.sin(r.rot)) < 0.35;
+        if (ok && Math.abs(r.x - p.x) < CATCH && r.py <= p.tipY && r.y > p.tipY){ capture(r,p); break; }
+      }
+    }
+  }
 }
 
 function step(dt){
@@ -378,150 +591,7 @@ function step(dt){
     if (!j.held && j.empty && j.p>0.2) j.empty=false;
   }
 
-  for (const r of rings){
-    r.py = r.y;
-    // gentle water currents: every ring drifts and bobs a little, even at rest
-    let ax = gx + 55*Math.sin(t*0.9 + r.seed) + 35*Math.sin(t*2.3 + r.seed*1.7);
-    let ay = gy + 45*Math.sin(t*1.3 + r.seed*2.1);
-    r.vphi += Math.sin(t*1.7 + r.seed*3)*0.8*dt;
-    for (let k=0;k<2;k++){
-      const j = jets[k]; if (j.s < 0.01) continue;
-      const dy = BOT - r.y; if (dy < 0) continue;
-      const w = 105 + dy*0.38, dx = r.x - NOZ[k];
-      const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
-      const f = j.s*inf*JET*(r.peg?0.8:1);
-      ay -= f;
-      ax += ((dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22) * (r.peg?0.4:1);
-      if (!r.peg) r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
-    }
-    r.vx += ax*dt; r.vy += ay*dt;
-    const d = Math.exp(-DRAG*dt); r.vx *= d; r.vy *= d;
-    r.x += r.vx*dt; r.y += r.vy*dt;
-
-    // tumble: flat (phi=0 or pi) is stable
-    r.vphi += -Math.sin(2*r.phi)*5*dt; r.vphi *= Math.exp(-2.5*dt); r.phi += r.vphi*dt;
-    if (r.peg){ r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*6); }
-
-    // tank walls, ceiling and floor, with friction
-    r.touch = null;
-    let pen = extent(r,1,0) - (r.x - TANK.x);            if (pen > -2) contact(r, 1, 0, pen, dt);
-    pen = extent(r,-1,0) - (TANK.x + TANK.w - r.x);      if (pen > -2) contact(r,-1, 0, pen, dt);
-    pen = extent(r,0,1) - (r.y - TANK.y);                if (pen > -2) contact(r, 0, 1, pen, dt);
-    for (let i=0;i<FLOOR.length-1;i++){
-      const a = FLOOR[i], b = FLOOR[i+1];
-      const sx = b[0]-a[0], sy = b[1]-a[1], L2 = sx*sx+sy*sy;
-      const u = Math.max(0, Math.min(1, ((r.x-a[0])*sx + (r.y-a[1])*sy)/L2));
-      const cx = a[0]+sx*u, cy = a[1]+sy*u;
-      let nx = r.x-cx, ny = r.y-cy, dist = Math.hypot(nx,ny);
-      const L = Math.sqrt(L2), lnx = sy/L, lny = -sx/L;   // face normal, into the water
-      if (u > 0 && u < 1){                                // over the face: signed distance
-        dist = nx*lnx + ny*lny; nx = lnx; ny = lny;
-      } else {                                            // past an end: round corner
-        if (dist < 0.01) continue;
-        nx /= dist; ny /= dist;
-        if (nx*lnx + ny*lny < 0) continue;                // behind this face: the next one handles it
-      }
-      pen = extent(r,nx,ny) - dist;
-      if (pen > -2) contact(r, nx, ny, pen, dt);
-    }
-
-    // in-plane angle: threaded rings sit square on the peg, rings resting on
-    // a surface lie along it, and sinking rings settle across the gravity
-    let rt, rk;
-    if (r.peg){ rt = 0; rk = 8; }
-    else if (r.touch != null){ rt = r.touch; rk = 10; }
-    else { rt = -tilt + r.vx*0.0015; rk = 3; }
-    let dr = rt - r.rot; dr -= Math.PI*Math.round(dr/Math.PI);
-    r.rot += dr*Math.min(1, dt*rk);
-
-    // pegs
-    for (const p of pegs){
-      if (r.peg === p){
-        // free to slide along the peg and rattle within the hole's
-        // clearance; it comes off the tip if pushed or tipped past it
-        const lim = HOLE - PEGW - 2, rel = r.x - p.x;
-        if (Math.abs(rel) > lim){ r.x = p.x + Math.sign(rel)*lim; if (Math.sign(r.vx)===Math.sign(rel)) r.vx = 0; }
-        if (r.y < p.tipY - 6) r.peg = null;
-        continue;
-      }
-      if (r.peg) continue;
-      const dx = r.x - p.x, adx = Math.abs(dx);
-      const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.7 && Math.abs(Math.sin(r.rot)) < 0.5;
-      const exh = extent(r,1,0), exv = extent(r,0,1);
-      if (ok && adx < CATCH && r.py <= p.tipY && r.y > p.tipY){ capture(r,p); continue; }
-      if (adx < exh + PEGW && r.y > p.tipY - exv && r.y < p.baseY + exv){
-        // An unthreaded ring can never be held up by a peg: the tip is a
-        // single point, so the ring tips over and slides off it, then falls
-        // freely beside the peg.
-        const dir = Math.sign(dx) || (Math.random()<.5?-1:1);
-        if (!(ok && adx < CATCH && r.y <= p.tipY + 2)){
-          const need = exh + PEGW - adx;
-          const nearTip = r.y < p.tipY + exv;
-          r.x += dir * (nearTip ? Math.min(need, 650*dt) : need);
-          if (Math.sign(r.vx) !== dir) r.vx = dir*Math.abs(r.vx)*0.3;
-          if (nearTip){ r.vx += dir*500*dt; r.vphi += dir*4*dt; }
-        }
-      }
-      // pedestal dome
-      const pcx = p.x, pcy = p.baseY + 30, pr = 34;
-      const cs = Math.cos(r.rot), sn = Math.sin(r.rot);
-      const wx = r.x - pcx, wy = r.y - pcy;
-      const lx = wx*cs + wy*sn, ly = (-wx*sn + wy*cs)*K, dd = Math.hypot(lx,ly), mn = R + pr;
-      const ex = wx;
-      if (dd < mn && dd > 0.01){
-        const o = mn - dd, ox = lx/dd*o, oy = ly/dd*o/K;
-        r.x += ox*cs - oy*sn; r.y += ox*sn + oy*cs;
-        const nl = Math.hypot(r.x-pcx, r.y-pcy) || 1, nx = (r.x-pcx)/nl, ny = (r.y-pcy)/nl;
-        const vn = r.vx*nx + r.vy*ny; if (vn<0){ r.vx -= vn*nx*1.2; r.vy -= vn*ny*1.2; }
-        // an unthreaded ring can only touch the dome off-centre: let it slip off
-        r.vx += (Math.sign(ex) || 1)*1100*dt; r.vphi += (Math.sign(ex)||1)*2*dt;
-      }
-    }
-  }
-
-  // stacks on pegs
-  for (const p of pegs){
-    const st = rings.filter(r=>r.peg===p).sort((a,b)=>b.y-a.y);
-    let lvl = p.baseY - TH;
-    for (const r of st){
-      const cushion = lvl - (2.5 + 2.5*Math.sin(t*1.6 + r.seed));
-      if (r.y > cushion){ r.y += (cushion - r.y)*Math.min(1, DT*14); if (r.vy > 0) r.vy *= 0.6; }
-      if (r.y > lvl + 2){ r.y = lvl + 2; if (r.vy > 0) r.vy = 0; }
-      lvl = r.y - TH*1.75;
-    }
-  }
-
-  // ring-ring
-  for (let i=0;i<rings.length;i++) for (let k=i+1;k<rings.length;k++){
-    const a = rings[i], b = rings[k];
-    if (a.peg && b.peg) continue;
-    const fr = a.peg ? a.rot : b.peg ? b.rot : (a.rot + b.rot)/2;
-    const cs = Math.cos(fr), sn = Math.sin(fr);
-    const wx = b.x - a.x, wy = b.y - a.y;
-    const lx = wx*cs + wy*sn, ly = (-wx*sn + wy*cs)*K, d = Math.hypot(lx,ly), mn = 2*R*0.86;
-    if (d >= mn + 3 || d < 0.001) continue;
-    const o = Math.max(0, mn - d), ox = lx/d*o, oy = ly/d*o/K;
-    const px = ox*cs - oy*sn, py = ox*sn + oy*cs;
-    const wa = a.peg ? 0 : (b.peg ? 1 : 0.5), wb = 1 - wa;
-    a.x -= px*wa; a.y -= py*wa; b.x += px*wb; b.y += py*wb;
-    const pl = Math.hypot(px,py) || 1, nx = px/pl, ny = py/pl;
-    // a loose ring lying on another one grips it, just like the floor
-    {
-      const gl = -(gx*nx + gy*ny);                 // >0: b rests on a, <0: a rests on b
-      const top = gl > 0 ? b : a, under = gl > 0 ? a : b, load = Math.abs(gl);
-      if (!top.peg && load > 0){
-        const tx = -ny, ty = nx, vt = (top.vx-under.vx)*tx + (top.vy-under.vy)*ty;
-        const pull = Math.abs(gx*tx + gy*ty), flat = 1 - Math.abs(Math.sin(top.phi));
-        if (Math.abs(vt) < 10 && pull <= (0.25 + 0.6*flat)*load){ top.vx -= vt*tx; top.vy -= vt*ty; }
-        else { const red = Math.min(Math.abs(vt), (0.12+0.38*flat)*load*DT)*Math.sign(vt); top.vx -= red*tx; top.vy -= red*ty; }
-      }
-    }
-    // a loose ring touching a threaded stack slips off it instead of perching
-    if (a.peg && !b.peg) b.vx += (Math.sign(b.x-a.x)||1)*900*DT;
-    if (b.peg && !a.peg) a.vx += (Math.sign(a.x-b.x)||1)*900*DT;   // stacks stay slippery: no perching
-    const rv = (b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
-    if (rv < 0){ const imp = -rv*0.6; a.vx -= nx*imp*wa*2; a.vy -= ny*imp*wa*2; b.vx += nx*imp*wb*2; b.vy += ny*imp*wb*2; }
-  }
+  stepRings(dt);
 
   // bubbles
   for (let k=0;k<2;k++){
