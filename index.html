@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#d93a4b">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Ring Splash</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a0f1c;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:#fff}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+  .ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    background:rgba(20,6,14,.55);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);z-index:5}
+  .hidden{display:none!important}
+  .panel{background:linear-gradient(#fff8ee,#ffe9d2);color:#5a1e2b;border-radius:28px;
+    padding:22px 34px;text-align:center;box-shadow:0 10px 0 #b8283a,0 18px 40px rgba(0,0,0,.4);
+    max-width:min(560px,86vw);max-height:86vh;overflow:auto}
+  h1{margin:0 0 4px;font-size:44px;letter-spacing:1px;color:#d93a4b;text-shadow:0 3px 0 #ffd23f}
+  h2{margin:0 0 8px;font-size:32px;color:#d93a4b}
+  p{margin:6px 0 12px;font-size:16px;line-height:1.35}
+  button{font:inherit;font-weight:700;border:0;border-radius:16px;padding:10px 18px;margin:5px;
+    background:#3a86ff;color:#fff;box-shadow:0 4px 0 #1f5ad1;cursor:pointer;font-size:17px}
+  button:active{transform:translateY(3px);box-shadow:0 1px 0 #1f5ad1}
+  button.big{font-size:24px;padding:12px 40px;background:#ff3b5c;box-shadow:0 5px 0 #b8283a}
+  button:disabled{background:#c9b7b0;box-shadow:0 4px 0 #a39089;color:#f3ece8}
+  #levels{display:flex;flex-wrap:wrap;justify-content:center;margin:6px 0 8px}
+  #levels button{width:74px;padding:8px 0;font-size:20px;line-height:1.1}
+  #levels small{display:block;font-size:12px;color:#ffd23f;letter-spacing:1px;min-height:14px}
+  #menuBtn{position:fixed;top:max(6px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);
+    z-index:4;width:52px;height:40px;padding:0;margin:0;border-radius:14px;font-size:18px;
+    background:rgba(255,255,255,.22);box-shadow:none}
+  #stars{font-size:52px;letter-spacing:6px;color:#ffc61a;text-shadow:0 3px 0 #c98a00;margin:4px 0}
+  #stars .off{color:#e2d2c8;text-shadow:none}
+  #rotate{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;
+    flex-direction:column;background:#d93a4b;font-size:24px;font-weight:700;text-align:center;padding:30px}
+  #rotate .ph{width:60px;height:100px;border:5px solid #fff;border-radius:12px;margin-bottom:24px;
+    animation:rot 2s ease-in-out infinite}
+  @keyframes rot{0%,30%{transform:rotate(0)}60%,100%{transform:rotate(-90deg)}}
+  @media (orientation:portrait){#rotate{display:flex}}
+  .hint{font-size:13px;opacity:.75}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="menuBtn" class="hidden" aria-label="Menu">❚❚</button>
+
+<div id="title" class="ov">
+  <div class="panel">
+    <h1>Ring Splash</h1>
+    <p>Tap or hold the <b>left</b> and <b>right</b> sides to pump water.<br>
+       <b>Tilt</b> the phone to steer the rings. Hook every ring on a peg!</p>
+    <div id="levels"></div>
+    <button id="playBtn" class="big">Play</button>
+    <p class="hint">Keyboard: A / L pump · ← → tilt · Esc menu</p>
+  </div>
+</div>
+
+<div id="menu" class="ov hidden">
+  <div class="panel">
+    <h2>Paused</h2>
+    <button id="resumeBtn" class="big">Resume</button><br>
+    <button id="restartBtn">Restart level</button>
+    <button id="levelsBtn">Levels</button><br>
+    <button id="calBtn">Set level tilt here</button>
+    <button id="tiltBtn">Tilt: On</button>
+    <button id="flipBtn">Flip tilt</button>
+    <button id="soundBtn">Sound: On</button>
+    <p class="hint" id="tiltInfo"></p>
+  </div>
+</div>
+
+<div id="win" class="ov hidden">
+  <div class="panel">
+    <h2 id="winTitle">Level clear!</h2>
+    <div id="stars"></div>
+    <p id="winStats"></p>
+    <button id="nextBtn" class="big">Next</button><br>
+    <button id="againBtn">Replay</button>
+    <button id="winLevelsBtn">Levels</button>
+  </div>
+</div>
+
+<div id="rotate"><div class="ph"></div>Turn your phone sideways</div>
+
+<script>
+"use strict";
+// ---------- World constants ----------
+const W = 1600, H = 900;
+const TANK = { x: 170, y: 84, w: 1260, h: 770 };
+const BOT = TANK.y + TANK.h;
+const R = 46, HOLE = 28, TH = 13, PEGW = 7;
+const CATCH = HOLE;              // how centered a ring must be to thread
+const G = 400, DRAG = 2.1, JET = 3400;
+const K = 2.6;                   // vertical squash for ring-ring collisions
+const NOZ = [TANK.x + TANK.w * 0.2, TANK.x + TANK.w * 0.8];
+const PEGCOL = ['#ff3b5c', '#3a86ff'];
+const RCOL = ['#ffd23f', '#3bceac', '#ff8c42', '#b388ff', '#4cc9f0', '#90be6d', '#ffffff', '#ff7eb6', '#f9f871'];
+
+const LEVELS = [
+  { name: 'Warm Up', par: 45, rings: [null,null,null,null,null,null],
+    pegs: [{x:.36,tip:.34,base:.62},{x:.64,tip:.34,base:.62}] },
+  { name: 'Three Peaks', par: 75, rings: [null,null,null,null,null,null,null,null],
+    pegs: [{x:.27,tip:.42,base:.68},{x:.5,tip:.22,base:.5},{x:.73,tip:.42,base:.68}] },
+  { name: 'Drifter', par: 55, rings: [null,null,null,null,null],
+    pegs: [{x:.5,tip:.3,base:.6,move:{amp:.2,speed:.6}}] },
+  { name: 'Color Match', par: 70, rings: [0,1,0,1,0,1],
+    pegs: [{x:.33,tip:.34,base:.62,color:0},{x:.67,tip:.34,base:.62,color:1}] },
+  { name: 'Grand Finale', par: 110, rings: [0,1,null,0,1,null,0,1,null],
+    pegs: [{x:.24,tip:.44,base:.68,color:0},{x:.5,tip:.26,base:.5,move:{amp:.1,speed:.8}},{x:.76,tip:.44,base:.68,color:1}] },
+];
+
+// floor: V-shaped valleys that funnel rings onto the nozzles
+const FLOOR = [[TANK.x, BOT-110],[NOZ[0], BOT],[TANK.x+TANK.w/2, BOT-150],[NOZ[1], BOT],[TANK.x+TANK.w, BOT-110]];
+function floorY(x){
+  for (let i=0;i<FLOOR.length-1;i++){
+    const a=FLOOR[i], b=FLOOR[i+1];
+    if (x<=b[0]) return a[1] + (b[1]-a[1]) * Math.max(0,(x-a[0])/(b[0]-a[0]));
+  }
+  return FLOOR[FLOOR.length-1][1];
+}
+function floorSlope(x){
+  for (let i=0;i<FLOOR.length-1;i++){
+    const a=FLOOR[i], b=FLOOR[i+1];
+    if (x<=b[0]) return (b[1]-a[1])/(b[0]-a[0]);
+  }
+  return 0;
+}
+
+// ---------- Persistence ----------
+let save = { unlocked: 1, best: {} };
+try { const s = JSON.parse(localStorage.getItem('ringsplash') || 'null'); if (s) save = Object.assign(save, s); } catch(e){}
+function persist(){ try { localStorage.setItem('ringsplash', JSON.stringify(save)); } catch(e){} }
+
+// ---------- Canvas ----------
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let scale=1, offX=0, offY=0, dpr=1;
+function resize(){
+  dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(innerWidth*dpr); cv.height = Math.round(innerHeight*dpr);
+  scale = Math.min(innerWidth/W, innerHeight/H);
+  offX = (innerWidth - W*scale)/2; offY = (innerHeight - H*scale)/2;
+}
+addEventListener('resize', resize); resize();
+
+// ---------- State ----------
+let state = 'title', lvlIdx = 0, pegs = [], rings = [], bubbles = [];
+let t = 0, timer = 0, pumps = 0, settle = 0;
+const jets = [0,1].map(()=>({ held:false, s:0, p:1, empty:false }));
+let tilt = 0, keyTilt = 0, tiltOn = true, tiltFlip = false, soundOn = true;
+let rawAngle = 0, neutral = 0, haveMotion = false;
+const keys = {};
+try { const o = JSON.parse(localStorage.getItem('ringsplash_opts')||'null');
+  if (o){ tiltOn=o.tiltOn!==false; tiltFlip=!!o.tiltFlip; soundOn=o.soundOn!==false; neutral=o.neutral||0; } } catch(e){}
+function saveOpts(){ try{ localStorage.setItem('ringsplash_opts', JSON.stringify({tiltOn,tiltFlip,soundOn,neutral})); }catch(e){} }
+
+function shade(hex, f){
+  const n = parseInt(hex.slice(1),16);
+  const r=(n>>16)&255, g=(n>>8)&255, b=n&255;
+  return `rgb(${Math.round(r*f)},${Math.round(g*f)},${Math.round(b*f)})`;
+}
+
+function loadLevel(i){
+  lvlIdx = i; const L = LEVELS[i];
+  pegs = L.pegs.map(p=>({ bx: TANK.x+p.x*TANK.w, x: TANK.x+p.x*TANK.w,
+    tipY: TANK.y+p.tip*TANK.h, baseY: TANK.y+p.base*TANK.h,
+    color: p.color==null?null:p.color, move: p.move||null }));
+  let n=0;
+  rings = L.rings.map((m,k)=>{
+    const col = m==null ? RCOL[(n++)%RCOL.length] : PEGCOL[m];
+    const side = k%2;
+    return { x: NOZ[side] + (Math.random()-.5)*160, y: BOT-TH-20-Math.floor(k/2)*34,
+      vx:0, vy:0, py:0, phi:(Math.random()-.5)*.4, vphi:0, rot:0,
+      match:m, col, dark:shade(col,.62), peg:null, seed:Math.random()*100 };
+  });
+  t=0; timer=0; pumps=0; settle=0; bubbles=[];
+  jets.forEach(j=>{ j.s=0; j.p=1; j.empty=false; });
+}
+
+// ---------- Input ----------
+const pointers = new Map();
+function updateHeld(){
+  const h=[false,false];
+  for (const s of pointers.values()) h[s]=true;
+  if (keys.a||keys.z) h[0]=true;
+  if (keys.l||keys.m) h[1]=true;
+  jets.forEach((j,k)=>{
+    if (h[k] && !j.held && state==='play'){ pumps++; }
+    j.held = h[k];
+    if (!h[k] && j.empty && j.p>0.2) j.empty=false;
+  });
+}
+cv.addEventListener('pointerdown', e=>{
+  e.preventDefault(); ensureAudio();
+  if (state!=='play') return;
+  pointers.set(e.pointerId, e.clientX < innerWidth/2 ? 0 : 1);
+  try{ cv.setPointerCapture(e.pointerId); }catch(_){}
+  updateHeld();
+});
+const lift = e=>{ pointers.delete(e.pointerId); updateHeld(); };
+cv.addEventListener('pointerup', lift);
+cv.addEventListener('pointercancel', lift);
+cv.addEventListener('contextmenu', e=>e.preventDefault());
+addEventListener('keydown', e=>{
+  const k = e.key.length===1 ? e.key.toLowerCase() : e.key;
+  keys[k]=true; updateHeld();
+  if (k==='Escape' || k==='p'){ if (state==='play') openMenu(); else if (state==='paused') closeMenu(); }
+});
+addEventListener('keyup', e=>{ const k = e.key.length===1 ? e.key.toLowerCase() : e.key; keys[k]=false; updateHeld(); });
+
+let motionN = 0, orientN = 0, nativeN = 0, lastMotionT = 0, sensorSrc = 'none';
+function onMotion(e){
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x==null) return;
+  motionN++; lastMotionT = performance.now(); sensorSrc = 'motion';
+  feedGravity(a.x, a.y);
+}
+// Fallback: derive gravity from orientation angles when devicemotion is silent
+function onOrient(e){
+  if (e.beta==null || e.gamma==null) return;
+  orientN++;
+  if (performance.now() - lastMotionT < 500) return;
+  sensorSrc = 'orientation';
+  const b = e.beta*Math.PI/180, g = e.gamma*Math.PI/180;
+  feedGravity(-Math.cos(b)*Math.sin(g)*9.8, Math.sin(b)*9.8);
+}
+// Native bridge: an Android app can call window.ringSplashGravity(x, y)
+// with SensorManager accelerometer values (device coords, m/s²).
+window.ringSplashGravity = (x, y)=>{ nativeN++; lastMotionT = performance.now(); sensorSrc = 'native'; feedGravity(x, y); };
+function feedGravity(ax, ay){
+  const a = { x: ax, y: ay };
+  const ang0 = (screen.orientation && typeof screen.orientation.angle==='number') ? screen.orientation.angle : (window.orientation||0);
+  const th = ang0*Math.PI/180;
+  const sx = a.x*Math.cos(th) - a.y*Math.sin(th);
+  const su = a.x*Math.sin(th) + a.y*Math.cos(th);
+  const gx = -sx, gy = su;
+  if (Math.hypot(gx,gy) < 1.2) return;     // phone lying flat: keep last angle
+  const ang = Math.atan2(gx, gy);
+  rawAngle += (ang - rawAngle) * 0.3;
+  haveMotion = true;
+}
+addEventListener('devicemotion', onMotion);
+addEventListener('deviceorientation', onOrient);
+
+async function startMotion(){
+  try {
+    if (typeof DeviceMotionEvent!=='undefined' && typeof DeviceMotionEvent.requestPermission==='function')
+      await DeviceMotionEvent.requestPermission();
+  } catch(e){}
+}
+async function goFullscreen(){
+  try { if (!document.fullscreenElement && document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen({navigationUI:'hide'}); } catch(e){}
+  try { if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape'); } catch(e){}
+  try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch(e){}
+}
+
+// ---------- Audio ----------
+let AC=null, master=null; const jetNodes=[];
+function ensureAudio(){
+  if (AC){ if (AC.state==='suspended') AC.resume(); return; }
+  try {
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    master = AC.createGain(); master.gain.value = soundOn?0.8:0; master.connect(AC.destination);
+    const len = AC.sampleRate*2, buf = AC.createBuffer(1,len,AC.sampleRate), d = buf.getChannelData(0);
+    for (let i=0;i<len;i++) d[i]=Math.random()*2-1;
+    for (let k=0;k<2;k++){
+      const src=AC.createBufferSource(); src.buffer=buf; src.loop=true;
+      const bp=AC.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=500; bp.Q.value=2.5;
+      const g=AC.createGain(); g.gain.value=0;
+      let out=g;
+      if (AC.createStereoPanner){ const p=AC.createStereoPanner(); p.pan.value=k?0.6:-0.6; g.connect(p); out=p; }
+      src.connect(bp); bp.connect(g); out.connect(master); src.start();
+      jetNodes.push({g,bp});
+    }
+  } catch(e){ AC=null; }
+}
+function plink(freq, when=0, vol=0.25){
+  if (!AC || !soundOn) return;
+  const t0 = AC.currentTime + when;
+  const o=AC.createOscillator(), g=AC.createGain();
+  o.type='sine'; o.frequency.setValueAtTime(freq,t0); o.frequency.exponentialRampToValueAtTime(freq*1.6,t0+0.12);
+  g.gain.setValueAtTime(0.0001,t0); g.gain.exponentialRampToValueAtTime(vol,t0+0.01); g.gain.exponentialRampToValueAtTime(0.0001,t0+0.35);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0+0.4);
+}
+function updateAudio(){
+  if (!AC) return;
+  const now = AC.currentTime;
+  jetNodes.forEach((n,k)=>{
+    const s = state==='play' ? jets[k].s : 0;
+    n.g.gain.setTargetAtTime(s*0.5, now, 0.03);
+    n.bp.frequency.setTargetAtTime(300 + Math.random()*900*(0.4+s), now, 0.015);
+  });
+}
+
+// ---------- Simulation ----------
+function capture(r, p){
+  r.peg = p; r.vx = 0;
+  plink(700 + Math.random()*500);
+  try{ navigator.vibrate && navigator.vibrate(18); }catch(e){}
+}
+
+function step(dt){
+  t += dt; timer += dt;
+  for (const p of pegs) if (p.move) p.x = p.bx + p.move.amp*TANK.w*Math.sin(t*p.move.speed);
+
+  // tilt
+  let target = keyTilt;
+  if (tiltOn && haveMotion) target = Math.max(-0.95, Math.min(0.95, (rawAngle-neutral)*1.3*(tiltFlip?-1:1)));
+  if (keys.ArrowLeft) target = -0.6; else if (keys.ArrowRight) target = 0.6;
+  tilt += (target - tilt) * Math.min(1, dt*10);
+  const gx = Math.sin(tilt)*G*1.25, gy = Math.cos(tilt)*G;
+
+  // jets / pump pressure
+  for (const j of jets){
+    const want = j.held && !j.empty ? 1 : 0;
+    j.s += (want - j.s) * Math.min(1, dt*(want>j.s?16:7));
+    if (j.held && !j.empty){ j.p -= dt/1.4; if (j.p<=0){ j.p=0; j.empty=true; } }
+    else j.p = Math.min(1, j.p + dt*0.6);
+    if (!j.held && j.empty && j.p>0.2) j.empty=false;
+  }
+
+  for (const r of rings){
+    r.py = r.y;
+    let ax = r.peg ? 0 : gx, ay = gy;
+    for (let k=0;k<2;k++){
+      const j = jets[k]; if (j.s < 0.01) continue;
+      const dy = BOT - r.y; if (dy < 0) continue;
+      const w = 70 + dy*0.42, dx = r.x - NOZ[k];
+      const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
+      const f = j.s*inf*JET*(r.peg?0.75:1);
+      ay -= f;
+      if (!r.peg){
+        ax += (dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22;
+        r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
+      }
+    }
+    if (!r.peg && r.y + TH >= floorY(r.x) - 2) ax += floorSlope(r.x)*G*1.6;
+    r.vx += ax*dt; r.vy += ay*dt;
+    const d = Math.exp(-DRAG*dt); r.vx *= d; r.vy *= d;
+    r.x += r.vx*dt; r.y += r.vy*dt;
+
+    // tumble: flat (phi=0 or pi) is stable
+    r.vphi += -Math.sin(2*r.phi)*5*dt; r.vphi *= Math.exp(-2.5*dt); r.phi += r.vphi*dt;
+    if (r.peg){ r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*8); r.vphi*=0.8; }
+    const rt = Math.max(-0.35, Math.min(0.35, r.vx*0.0022 + (r.peg?0:tilt*0.25)));
+    r.rot += (rt - r.rot)*Math.min(1, dt*5);
+
+    // walls / ceiling / floor
+    if (r.x < TANK.x+R){ r.x = TANK.x+R; r.vx = Math.abs(r.vx)*0.3; }
+    if (r.x > TANK.x+TANK.w-R){ r.x = TANK.x+TANK.w-R; r.vx = -Math.abs(r.vx)*0.3; }
+    if (r.y < TANK.y+TH+6){ r.y = TANK.y+TH+6; r.vy = Math.abs(r.vy)*0.2; }
+    const fy = floorY(r.x);
+    if (r.y + TH > fy){ r.y = fy - TH; if (r.vy>0) r.vy *= -0.15; }
+
+    // pegs
+    for (const p of pegs){
+      if (r.peg === p){
+        const lim = HOLE - PEGW - 2;
+        r.x = p.x + Math.max(-lim, Math.min(lim, (r.x - p.x)*0.85));
+        r.vx = 0;
+        if (r.y < p.tipY - 6) r.peg = null;      // blown off the top
+        continue;
+      }
+      if (r.peg) continue;
+      const dx = r.x - p.x, adx = Math.abs(dx);
+      const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.7;
+      if (ok && adx < CATCH && r.py <= p.tipY && r.y > p.tipY){ capture(r,p); continue; }
+      if (adx < R + PEGW && r.y > p.tipY - TH - 2 && r.y < p.baseY + TH){
+        const dir = Math.sign(dx) || (Math.random()<.5?-1:1);
+        if (ok && adx < CATCH && r.y <= p.tipY) { /* threading in progress */ }
+        else if (r.py <= p.tipY + 4 && r.y <= p.tipY + 14){
+          // ring body resting on the tip: slide off
+          r.y = Math.min(r.y, p.tipY - TH); if (r.vy>0) r.vy = 0;
+          r.vx += dir*900*dt;
+          r.vphi += dir*2*dt;
+        } else if (r.y > p.tipY){
+          r.x = p.x + dir*(R+PEGW);
+          if (Math.sign(r.vx)!==dir) r.vx = dir*Math.abs(r.vx)*0.3;
+        }
+      }
+      // pedestal dome
+      const pcx = p.x, pcy = p.baseY + 30, pr = 34;
+      const ex = r.x - pcx, ey = (r.y - pcy)*K, dd = Math.hypot(ex,ey), mn = R + pr;
+      if (dd < mn && dd > 0.01){
+        const nx = ex/dd, ny = ey/dd, o = mn - dd;
+        r.x += nx*o; r.y += ny*o/K;
+        const vn = r.vx*nx + r.vy*ny; if (vn<0){ r.vx -= vn*nx*1.2; r.vy -= vn*ny*1.2; }
+      }
+    }
+  }
+
+  // stacks on pegs
+  for (const p of pegs){
+    const st = rings.filter(r=>r.peg===p).sort((a,b)=>b.y-a.y);
+    let lvl = p.baseY - TH;
+    for (const r of st){
+      if (r.y > lvl){ r.y = lvl; if (r.vy>0) r.vy = 0; }
+      lvl = r.y - TH*1.75;
+    }
+  }
+
+  // ring-ring
+  for (let i=0;i<rings.length;i++) for (let k=i+1;k<rings.length;k++){
+    const a = rings[i], b = rings[k];
+    if (a.peg && b.peg) continue;
+    const dx = b.x - a.x, dy = (b.y - a.y)*K, d = Math.hypot(dx,dy), mn = 2*R*0.86;
+    if (d >= mn || d < 0.001) continue;
+    const nx = dx/d, ny = dy/d, o = mn - d;
+    const wa = a.peg ? 0 : (b.peg ? 1 : 0.5), wb = 1 - wa;
+    a.x -= nx*o*wa; a.y -= ny*o*wa/K; b.x += nx*o*wb; b.y += ny*o*wb/K;
+    const rv = (b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
+    if (rv < 0){ const imp = -rv*0.6; a.vx -= nx*imp*wa*2; a.vy -= ny*imp*wa*2; b.vx += nx*imp*wb*2; b.vy += ny*imp*wb*2; }
+  }
+
+  // bubbles
+  for (let k=0;k<2;k++){
+    const s = jets[k].s;
+    if (Math.random() < s*dt*110) bubbles.push({ x:NOZ[k]+(Math.random()-.5)*24, y:BOT-14, r:3+Math.random()*9*s,
+      vx:(Math.random()-.5)*120, vy:-350-Math.random()*350*s, ph:Math.random()*6 });
+  }
+  if (Math.random() < dt*1.5){ const x = TANK.x+40+Math.random()*(TANK.w-80); bubbles.push({x, y:floorY(x)-4, r:2+Math.random()*3, vx:0, vy:-60, ph:Math.random()*6}); }
+  for (const b of bubbles){
+    b.vy += (-130 - b.vy)*Math.min(1,dt*1.8); b.vx *= Math.exp(-2*dt);
+    b.x += (b.vx + Math.sin(t*6+b.ph)*30)*dt; b.y += b.vy*dt;
+  }
+  bubbles = bubbles.filter(b=>b.y > TANK.y + 10);
+  if (bubbles.length > 400) bubbles.splice(0, bubbles.length-400);
+
+  // win check
+  const allIn = rings.every(r=>r.peg && r.y > r.peg.tipY + TH && Math.abs(r.vy) < 40);
+  settle = allIn ? settle + dt : 0;
+  if (settle > 0.8) winLevel();
+}
+
+function landedCount(){ return rings.filter(r=>r.peg && r.y > r.peg.tipY + TH).length; }
+
+// ---------- Drawing ----------
+function rr(x,y,w,h,r){ ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x,y,w,h,r) : ctx.rect(x,y,w,h); }
+
+function annulus(cx,cy,rx,ry,k){
+  ctx.beginPath();
+  ctx.ellipse(cx,cy,rx,ry,0,0,Math.PI*2);
+  ctx.moveTo(cx+rx*k,cy);
+  ctx.ellipse(cx,cy,rx*k,ry*k,0,0,Math.PI*2,true);
+  ctx.fill('evenodd');
+}
+function drawRing(r, part){
+  const fs = Math.abs(Math.sin(r.phi));
+  const ry = R*(0.3 + 0.7*fs), band = 7*(1-fs) + 2;
+  ctx.save(); ctx.translate(r.x, r.y); ctx.rotate(r.rot);
+  if (part){ ctx.beginPath(); if (part<0) ctx.rect(-R-12,-R-24,2*R+24,R+24); else ctx.rect(-R-12,0,2*R+24,R+30); ctx.clip(); }
+  ctx.fillStyle = r.dark; annulus(0, band, R, ry, HOLE/R);
+  ctx.fillStyle = r.col;  annulus(0, 0, R, ry, HOLE/R);
+  ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 3.5; ctx.lineCap='round';
+  ctx.beginPath(); ctx.ellipse(0, 0, R-8, Math.max(2, ry-ry*0.17), 0, Math.PI*1.08, Math.PI*1.62); ctx.stroke();
+  ctx.restore();
+}
+function drawPeg(p){
+  // mount plate on back wall + rail
+  if (p.move){
+    ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.lineWidth=8; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(p.bx-p.move.amp*TANK.w, p.baseY+30); ctx.lineTo(p.bx+p.move.amp*TANK.w, p.baseY+30); ctx.stroke();
+  }
+  const grd = ctx.createLinearGradient(p.x-PEGW,0,p.x+PEGW,0);
+  grd.addColorStop(0,'#cfd8e6'); grd.addColorStop(.45,'#ffffff'); grd.addColorStop(1,'#9aa7bb');
+  ctx.fillStyle = grd;
+  ctx.fillRect(p.x-PEGW, p.tipY, PEGW*2, p.baseY - p.tipY + 10);
+  ctx.beginPath(); ctx.arc(p.x, p.tipY, PEGW, Math.PI, 0); ctx.fill();
+  if (p.color!=null){
+    ctx.fillStyle = PEGCOL[p.color];
+    ctx.beginPath(); ctx.arc(p.x, p.tipY, PEGW+3, 0, Math.PI*2); ctx.fill();
+    ctx.fillRect(p.x-PEGW, p.tipY+14, PEGW*2, 10);
+  }
+}
+function drawPedestal(p){
+  const cx=p.x, cy=p.baseY+30;
+  const g = ctx.createRadialGradient(cx-10,cy-14,4,cx,cy,40);
+  const base = p.color!=null ? PEGCOL[p.color] : '#ffd23f';
+  g.addColorStop(0,'#ffffff'); g.addColorStop(.35, base); g.addColorStop(1, shade(base,.55));
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.ellipse(cx, cy, 36, 30, 0, 0, Math.PI*2); ctx.fill();
+}
+
+function draw(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = '#2a0f1c'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.setTransform(dpr*scale,0,0,dpr*scale,dpr*offX,dpr*offY);
+
+  // casing
+  const cg = ctx.createLinearGradient(0,0,0,H);
+  cg.addColorStop(0,'#f2566a'); cg.addColorStop(1,'#b8283a');
+  ctx.fillStyle = cg; rr(0,0,W,H,70); ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.35)'; ctx.lineWidth=4; rr(8,8,W-16,H-16,62); ctx.stroke();
+
+  // tank water
+  ctx.save(); rr(TANK.x,TANK.y,TANK.w,TANK.h,34); ctx.clip();
+  const wg = ctx.createLinearGradient(0,TANK.y,0,BOT);
+  wg.addColorStop(0,'#7fe3ff'); wg.addColorStop(.55,'#29a6e0'); wg.addColorStop(1,'#1665b8');
+  ctx.fillStyle = wg; ctx.fillRect(TANK.x,TANK.y,TANK.w,TANK.h);
+  // light rays
+  ctx.fillStyle='rgba(255,255,255,.07)';
+  for (let i=0;i<5;i++){
+    const x0 = TANK.x + 120 + i*270 + Math.sin(t*0.4+i)*40;
+    ctx.beginPath(); ctx.moveTo(x0,TANK.y); ctx.lineTo(x0+70,TANK.y); ctx.lineTo(x0+220+Math.sin(t*.3+i)*60,BOT); ctx.lineTo(x0+60,BOT); ctx.fill();
+  }
+  // floor
+  ctx.fillStyle='#ffe3a3';
+  ctx.beginPath(); ctx.moveTo(TANK.x,BOT+40); FLOOR.forEach(([x,y])=>ctx.lineTo(x,y)); ctx.lineTo(TANK.x+TANK.w,BOT+40); ctx.fill();
+  ctx.strokeStyle='#f0b85c'; ctx.lineWidth=5; ctx.beginPath(); FLOOR.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y)); ctx.stroke();
+  // nozzles
+  for (let k=0;k<2;k++){
+    const x = NOZ[k], on = jets[k].s;
+    ctx.fillStyle = '#4a5568';
+    ctx.beginPath(); ctx.moveTo(x-30,BOT+4); ctx.lineTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+30,BOT+4); ctx.fill();
+    if (on>0.02){
+      const jg = ctx.createLinearGradient(0,BOT-16,0,BOT-420);
+      jg.addColorStop(0,`rgba(255,255,255,${0.45*on})`); jg.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle = jg;
+      ctx.beginPath(); ctx.moveTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+120,BOT-420); ctx.lineTo(x-120,BOT-420); ctx.fill();
+    }
+  }
+  pegs.forEach(drawPedestal);
+  const caught = rings.filter(r=>r.peg);
+  caught.forEach(r=>drawRing(r,-1));
+  pegs.forEach(drawPeg);
+  caught.forEach(r=>drawRing(r,1));
+  rings.filter(r=>!r.peg).forEach(r=>drawRing(r,0));
+  // bubbles
+  ctx.strokeStyle='rgba(255,255,255,.75)'; ctx.lineWidth=2;
+  for (const b of bubbles){ ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,Math.PI*2); ctx.stroke(); }
+  // glass glare
+  const gg = ctx.createLinearGradient(TANK.x,TANK.y,TANK.x+500,TANK.y+500);
+  gg.addColorStop(0,'rgba(255,255,255,.22)'); gg.addColorStop(.35,'rgba(255,255,255,0)');
+  ctx.fillStyle = gg; ctx.fillRect(TANK.x,TANK.y,TANK.w,TANK.h);
+  ctx.restore();
+  ctx.strokeStyle='rgba(255,255,255,.55)'; ctx.lineWidth=6; rr(TANK.x,TANK.y,TANK.w,TANK.h,34); ctx.stroke();
+
+  // HUD on casing
+  ctx.fillStyle='#fff'; ctx.font='800 34px system-ui,sans-serif'; ctx.textBaseline='middle';
+  ctx.textAlign='left';
+  if (state!=='title') ctx.fillText(`${lvlIdx+1}. ${LEVELS[lvlIdx].name}`, TANK.x+10, 44);
+  else ctx.fillText('RING SPLASH', TANK.x+10, 44);
+  ctx.textAlign='right';
+  if (state!=='title'){
+    const s = Math.floor(timer);
+    ctx.fillText(`◯ ${landedCount()}/${rings.length}   ⏱ ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`, TANK.x+TANK.w-10, 44);
+  }
+
+  // pump buttons + pressure gauges
+  for (let k=0;k<2;k++){
+    const cx = k? W-85 : 85, j = jets[k], pressed = j.held && !j.empty;
+    // gauge
+    ctx.fillStyle='rgba(0,0,0,.25)'; rr(cx-16,200,32,380,16); ctx.fill();
+    const ph = 372*j.p;
+    ctx.fillStyle = j.empty ? '#ffb3b3' : (j.p>0.3 ? '#7fe3ff' : '#ffd23f');
+    rr(cx-12,576-ph,24,ph,12); ctx.fill();
+    // button
+    ctx.fillStyle='#7a1424'; ctx.beginPath(); ctx.arc(cx,700+8,60,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = pressed ? '#ffc61a' : '#ffd23f';
+    ctx.beginPath(); ctx.arc(cx, pressed?706:696, 58, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#b86e00'; ctx.font='800 22px system-ui,sans-serif'; ctx.textAlign='center';
+    ctx.fillText('PUMP', cx, pressed?706:696);
+  }
+
+  // spirit level (tilt indicator) in bottom strip
+  const lx=W/2, ly=BOT+23;
+  ctx.fillStyle='rgba(0,0,0,.25)'; rr(lx-110,ly-13,220,26,13); ctx.fill();
+  ctx.fillStyle='#d8ff7a'; rr(lx-106,ly-9,212,18,9); ctx.fill();
+  ctx.fillStyle='rgba(255,255,255,.9)';
+  ctx.beginPath(); ctx.ellipse(lx - tilt/0.95*88, ly, 16, 7, 0, 0, Math.PI*2); ctx.fill();
+  if (!haveMotion && tiltOn){
+    ctx.fillStyle='rgba(255,255,255,.8)'; ctx.font='700 18px system-ui,sans-serif'; ctx.textAlign='left';
+    ctx.fillText('no tilt sensor', lx+124, ly);
+  }
+  ctx.strokeStyle='rgba(0,0,0,.35)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(lx-20,ly-9); ctx.lineTo(lx-20,ly+9); ctx.moveTo(lx+20,ly-9); ctx.lineTo(lx+20,ly+9); ctx.stroke();
+}
+
+// ---------- Loop ----------
+let last = performance.now(), acc = 0;
+const DT = 1/120;
+function frame(now){
+  let el = (now - last)/1000; last = now;
+  if (el > 0.1) el = 0.1;
+  if (state==='play'){
+    acc += el;
+    while (acc >= DT){ step(DT); acc -= DT; }
+  } else if (state==='title'){
+    // idle demo: bubbles drift on title screen
+    t += el;
+  }
+  updateAudio();
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ---------- UI ----------
+const $ = id=>document.getElementById(id);
+function show(id, on){ $(id).classList.toggle('hidden', !on); }
+function starsFor(i, time){ const p = LEVELS[i].par; return time<=p ? 3 : time<=p*1.6 ? 2 : 1; }
+
+function buildLevels(){
+  const box = $('levels'); box.innerHTML='';
+  LEVELS.forEach((L,i)=>{
+    const b = document.createElement('button');
+    const st = save.best[i]||0;
+    b.innerHTML = `${i+1}<small>${'★'.repeat(st)}</small>`;
+    b.disabled = i >= save.unlocked;
+    b.onclick = ()=>startLevel(i);
+    box.appendChild(b);
+  });
+}
+function startLevel(i){
+  ensureAudio(); startMotion(); goFullscreen();
+  loadLevel(i);
+  pointers.clear(); jets.forEach(j=>j.held=false);
+  state='play'; acc=0;
+  show('title',false); show('win',false); show('menu',false); show('menuBtn',true);
+}
+function openMenu(){
+  if (state!=='play') return;
+  state='paused'; pointers.clear(); updateHeld(); refreshMenu(); show('menu',true);
+}
+function closeMenu(){ state='play'; last=performance.now(); show('menu',false); }
+function refreshMenu(){
+  $('tiltBtn').textContent = 'Tilt: ' + (tiltOn?'On':'Off');
+  $('soundBtn').textContent = 'Sound: ' + (soundOn?'On':'Off');
+  updateSensorInfo();
+}
+function updateSensorInfo(){
+  const inFrame = (()=>{ try { return window.self !== window.top; } catch(e){ return true; } })();
+  const deg = Math.round(rawAngle*180/Math.PI);
+  let msg = haveMotion ? `Tilt sensor active (${sensorSrc}, ${deg}°). Hold the phone how you like and tap “Set level tilt here”.`
+    : 'No tilt data yet.' + (inFrame ? ' This page is inside an embedded viewer, which blocks motion sensors. Open it in the app build or as a standalone page.' : !window.isSecureContext ? ' The page is not on https, so Chrome blocks motion sensors.' : ' Try moving the phone a little.');
+  $('tiltInfo').textContent = msg + `  [motion ${motionN} · orient ${orientN} · native ${nativeN}]`;
+}
+setInterval(()=>{ if (state==='paused') updateSensorInfo(); }, 300);
+function winLevel(){
+  state='win'; show('menuBtn',false);
+  const st = starsFor(lvlIdx, timer);
+  save.best[lvlIdx] = Math.max(save.best[lvlIdx]||0, st);
+  save.unlocked = Math.max(save.unlocked, Math.min(LEVELS.length, lvlIdx+2));
+  persist();
+  $('stars').innerHTML = [0,1,2].map(i=>`<span class="${i<st?'':'off'}">★</span>`).join('');
+  const s = Math.floor(timer);
+  $('winStats').textContent = `Time ${Math.floor(s/60)}:${String(s%60).padStart(2,'0')} · ${pumps} pumps · 3★ under ${LEVELS[lvlIdx].par}s`;
+  const lastLvl = lvlIdx === LEVELS.length-1;
+  $('winTitle').textContent = lastLvl ? 'You beat them all!' : 'Level clear!';
+  $('nextBtn').textContent = lastLvl ? 'Play again' : 'Next';
+  [0,1,2].forEach(i=>plink(880*Math.pow(1.26,i), i*0.13, 0.22));
+  show('win',true);
+}
+function toTitle(){ state='title'; buildLevels(); show('menu',false); show('win',false); show('menuBtn',false); show('title',true); }
+
+$('playBtn').onclick = ()=>startLevel(Math.min(save.unlocked-1, LEVELS.length-1));
+$('menuBtn').onclick = openMenu;
+$('resumeBtn').onclick = closeMenu;
+$('restartBtn').onclick = ()=>startLevel(lvlIdx);
+$('levelsBtn').onclick = toTitle;
+$('winLevelsBtn').onclick = toTitle;
+$('againBtn').onclick = ()=>startLevel(lvlIdx);
+$('nextBtn').onclick = ()=>startLevel(lvlIdx===LEVELS.length-1 ? 0 : lvlIdx+1);
+$('calBtn').onclick = ()=>{ neutral = rawAngle; saveOpts(); $('calBtn').textContent='Tilt set ✓'; setTimeout(()=>$('calBtn').textContent='Set level tilt here',1200); };
+$('tiltBtn').onclick = ()=>{ tiltOn=!tiltOn; saveOpts(); refreshMenu(); };
+$('flipBtn').onclick = ()=>{ tiltFlip=!tiltFlip; saveOpts(); $('flipBtn').textContent = tiltFlip?'Flip tilt ✓':'Flip tilt'; };
+$('soundBtn').onclick = ()=>{ soundOn=!soundOn; if (master) master.gain.value = soundOn?0.8:0; saveOpts(); refreshMenu(); };
+$('flipBtn').textContent = tiltFlip?'Flip tilt ✓':'Flip tilt';
+document.addEventListener('visibilitychange', ()=>{ if (document.hidden && state==='play') openMenu(); });
+
+loadLevel(0); buildLevels();
+requestAnimationFrame(frame);
+
+// test hook
+window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, loadLevel, startLevel, step, landedCount };
+</script>
+</body>
+</html>
