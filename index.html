@@ -142,6 +142,8 @@ function resize(){
   updateView();
 }
 function updateView(){
+  const ty = screen.orientation && screen.orientation.type;
+  if (ty === 'landscape-primary' || ty === 'landscape-secondary') PRIMARY = findPrimary();
   viewRot = (((PRIMARY - screenAngle()) % 360) + 360) % 360;
   const swap = viewRot % 180 !== 0;
   const vw = swap ? innerHeight : innerWidth, vh = swap ? innerWidth : innerHeight;
@@ -225,8 +227,15 @@ function screenAngle(){
 }
 // The game is glued to the device in its landscape-primary pose. Phones are
 // naturally portrait (landscape-primary = 90 deg); tablets/desktops are 0.
-const PRIMARY = (()=>{ const a = screenAngle(), wide = innerWidth > innerHeight;
-  const naturalPortrait = (a%180===0) ? !wide : wide; return naturalPortrait ? 90 : 0; })();
+function findPrimary(){
+  const a = screenAngle(), ty = screen.orientation && screen.orientation.type;
+  if (ty === 'landscape-primary') return a;
+  if (ty === 'landscape-secondary') return (a+180)%360;
+  const wide = innerWidth > innerHeight;
+  const naturalPortrait = (a%180===0) ? !wide : wide;
+  return naturalPortrait ? 90 : 0;
+}
+let PRIMARY = findPrimary();
 let motionN = 0, orientN = 0, nativeN = 0, lastMotionT = 0, sensorSrc = 'none';
 function onMotion(e){
   const a = e.accelerationIncludingGravity;
@@ -330,17 +339,20 @@ function extent(r, nx, ny){
 // push a ring out of a surface (normal n points into the water) with friction:
 // the flatter it lies and the harder gravity presses it in, the more it grips
 function contact(r, nx, ny, pen, dt){
-  r.x += nx*pen; r.y += ny*pen;
+  if (pen > 0){ r.x += nx*pen; r.y += ny*pen; }          // within 2px still counts as touching
   const vn = r.vx*nx + r.vy*ny;
   if (vn < 0){ r.vx -= vn*nx*1.1; r.vy -= vn*ny*1.1; }
   const load = -(gx*nx + gy*ny);
   if (load <= 0) return;
   r.touch = Math.atan2(nx, -ny);
   const flat = 1 - Math.abs(Math.sin(r.phi));            // 1 = full contact
-  const mu = 0.12 + 0.36*flat;
   const tx = -ny, ty = nx, vt = r.vx*tx + r.vy*ty;
-  const keep = Math.max(0, Math.abs(vt) - mu*load*dt) * Math.exp(-3*flat*dt);
-  const dv = Math.sign(vt)*keep - vt;
+  const pull = gx*tx + gy*ty;                              // gravity along the surface
+  const muS = 0.25 + 0.6*flat;                             // grip at rest: flat ~40 deg
+  const muK = 0.12 + 0.38*flat;                            // once sliding
+  let dv;
+  if (Math.abs(vt) < 10 && Math.abs(pull) <= muS*load) dv = -vt;   // stays put
+  else dv = Math.sign(vt)*Math.max(0, Math.abs(vt) - muK*load*dt) * Math.exp(-3*flat*dt) - vt;
   r.vx += dv*tx; r.vy += dv*ty;
 }
 
@@ -375,7 +387,7 @@ function step(dt){
     for (let k=0;k<2;k++){
       const j = jets[k]; if (j.s < 0.01) continue;
       const dy = BOT - r.y; if (dy < 0) continue;
-      const w = 70 + dy*0.42, dx = r.x - NOZ[k];
+      const w = 105 + dy*0.38, dx = r.x - NOZ[k];
       const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
       const f = j.s*inf*JET*(r.peg?0.8:1);
       ay -= f;
@@ -392,9 +404,9 @@ function step(dt){
 
     // tank walls, ceiling and floor, with friction
     r.touch = null;
-    let pen = extent(r,1,0) - (r.x - TANK.x);            if (pen > 0) contact(r, 1, 0, pen, dt);
-    pen = extent(r,-1,0) - (TANK.x + TANK.w - r.x);      if (pen > 0) contact(r,-1, 0, pen, dt);
-    pen = extent(r,0,1) - (r.y - TANK.y);                if (pen > 0) contact(r, 0, 1, pen, dt);
+    let pen = extent(r,1,0) - (r.x - TANK.x);            if (pen > -2) contact(r, 1, 0, pen, dt);
+    pen = extent(r,-1,0) - (TANK.x + TANK.w - r.x);      if (pen > -2) contact(r,-1, 0, pen, dt);
+    pen = extent(r,0,1) - (r.y - TANK.y);                if (pen > -2) contact(r, 0, 1, pen, dt);
     for (let i=0;i<FLOOR.length-1;i++){
       const a = FLOOR[i], b = FLOOR[i+1];
       const sx = b[0]-a[0], sy = b[1]-a[1], L2 = sx*sx+sy*sy;
@@ -410,7 +422,7 @@ function step(dt){
         if (nx*lnx + ny*lny < 0) continue;                // behind this face: the next one handles it
       }
       pen = extent(r,nx,ny) - dist;
-      if (pen > 0) contact(r, nx, ny, pen, dt);
+      if (pen > -2) contact(r, nx, ny, pen, dt);
     }
 
     // in-plane angle: threaded rings sit square on the peg, rings resting on
@@ -487,15 +499,26 @@ function step(dt){
     const cs = Math.cos(fr), sn = Math.sin(fr);
     const wx = b.x - a.x, wy = b.y - a.y;
     const lx = wx*cs + wy*sn, ly = (-wx*sn + wy*cs)*K, d = Math.hypot(lx,ly), mn = 2*R*0.86;
-    if (d >= mn || d < 0.001) continue;
-    const o = mn - d, ox = lx/d*o, oy = ly/d*o/K;
+    if (d >= mn + 3 || d < 0.001) continue;
+    const o = Math.max(0, mn - d), ox = lx/d*o, oy = ly/d*o/K;
     const px = ox*cs - oy*sn, py = ox*sn + oy*cs;
     const wa = a.peg ? 0 : (b.peg ? 1 : 0.5), wb = 1 - wa;
     a.x -= px*wa; a.y -= py*wa; b.x += px*wb; b.y += py*wb;
     const pl = Math.hypot(px,py) || 1, nx = px/pl, ny = py/pl;
+    // a loose ring lying on another one grips it, just like the floor
+    {
+      const gl = -(gx*nx + gy*ny);                 // >0: b rests on a, <0: a rests on b
+      const top = gl > 0 ? b : a, under = gl > 0 ? a : b, load = Math.abs(gl);
+      if (!top.peg && load > 0){
+        const tx = -ny, ty = nx, vt = (top.vx-under.vx)*tx + (top.vy-under.vy)*ty;
+        const pull = Math.abs(gx*tx + gy*ty), flat = 1 - Math.abs(Math.sin(top.phi));
+        if (Math.abs(vt) < 10 && pull <= (0.25 + 0.6*flat)*load){ top.vx -= vt*tx; top.vy -= vt*ty; }
+        else { const red = Math.min(Math.abs(vt), (0.12+0.38*flat)*load*DT)*Math.sign(vt); top.vx -= red*tx; top.vy -= red*ty; }
+      }
+    }
     // a loose ring touching a threaded stack slips off it instead of perching
     if (a.peg && !b.peg) b.vx += (Math.sign(b.x-a.x)||1)*900*DT;
-    if (b.peg && !a.peg) a.vx += (Math.sign(a.x-b.x)||1)*900*DT;
+    if (b.peg && !a.peg) a.vx += (Math.sign(a.x-b.x)||1)*900*DT;   // stacks stay slippery: no perching
     const rv = (b.vx-a.vx)*nx + (b.vy-a.vy)*ny;
     if (rv < 0){ const imp = -rv*0.6; a.vx -= nx*imp*wa*2; a.vy -= ny*imp*wa*2; b.vx += nx*imp*wb*2; b.vy += ny*imp*wb*2; }
   }
