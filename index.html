@@ -53,7 +53,7 @@
        <b>Tilt</b> the phone to steer the rings. Hook every ring on a peg!</p>
     <div id="levels"></div>
     <button id="playBtn" class="big">Play</button>
-    <p class="hint">Keyboard: A / L pump · hold ← → to turn the tank · Esc menu</p>
+    <p class="hint"><span id="ver"></span> · Keyboard: A / L pump · hold ← → to turn the tank · Esc menu</p>
   </div>
 </div>
 
@@ -86,6 +86,7 @@
 
 <script>
 "use strict";
+const VERSION = "v0.7";   // bump on every push so testers can see which build they have
 // ---------- World constants ----------
 const W = 1600, H = 900;
 const TANK = { x: 170, y: 84, w: 1260, h: 770 };
@@ -747,6 +748,10 @@ function draw(){
     ctx.fillText('PUMP', cx, pressed?706:696);
   }
 
+  // build number, bottom-left of the case
+  ctx.fillStyle='rgba(255,255,255,.75)'; ctx.font='700 20px system-ui,sans-serif'; ctx.textAlign='left';
+  ctx.fillText(VERSION, TANK.x+6, BOT+23);
+
   // spirit level (tilt indicator) in bottom strip
   const lx=W/2, ly=BOT+23;
   ctx.fillStyle='rgba(0,0,0,.25)'; rr(lx-110,ly-13,220,26,13); ctx.fill();
@@ -852,7 +857,7 @@ $('soundBtn').onclick = ()=>{ soundOn=!soundOn; if (master) master.gain.value = 
 $('flipBtn').textContent = tiltFlip?'Flip tilt ✓':'Flip tilt';
 document.addEventListener('visibilitychange', ()=>{ if (document.hidden && state==='play') openMenu(); });
 
-loadLevel(0); buildLevels();
+loadLevel(0); buildLevels(); $('ver').textContent = VERSION;
 requestAnimationFrame(frame);
 
 // test hook
