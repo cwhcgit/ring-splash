@@ -86,7 +86,7 @@
 
 <script>
 "use strict";
-const VERSION = "v0.9";   // bump on every push so testers can see which build they have
+const VERSION = "v0.9.1";   // bump on every push so testers can see which build they have
 // ---------- World constants ----------
 const W = 1600, H = 900;
 const TANK = { x: 170, y: 84, w: 1260, h: 770 };
@@ -942,7 +942,7 @@ loadLevel(0); buildLevels(); $('ver').textContent = VERSION;
 requestAnimationFrame(frame);
 
 // test hook
-window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, levels:LEVELS, floorY, get floorPeaks(){return FLOOR_PEAKS;}, get valleyX(){return VALLEY_X;}, get floor(){return FLOOR;}, setJet(v){JET=v;}, noz:NOZ, loadLevel, startLevel, step, landedCount };
+window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, forceTilt(a){ haveMotion=true; tiltOn=true; tiltFlip=false; neutral=0; rawAngle=a; }, get timer(){return timer;}, get state(){return state;}, set state(v){state=v;}, starsFor, scores, levels:LEVELS, floorY, get floorPeaks(){return FLOOR_PEAKS;}, get valleyX(){return VALLEY_X;}, get floor(){return FLOOR;}, setJet(v){JET=v;}, noz:NOZ, loadLevel, startLevel, step, landedCount };
 </script>
 </body>
 </html>
