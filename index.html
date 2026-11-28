@@ -86,7 +86,7 @@
 
 <script>
 "use strict";
-const VERSION = "v0.8";   // bump on every push so testers can see which build they have
+const VERSION = "v0.9";   // bump on every push so testers can see which build they have
 // ---------- World constants ----------
 const W = 1600, H = 900;
 const TANK = { x: 170, y: 84, w: 1260, h: 770 };
@@ -98,24 +98,66 @@ const JET_W0 = 62, JET_SPREAD = 0.22, JET_REACH = 330;   // core width at the no
 const BURST = 0.35, REFILL = 0.3;   // seconds of water per press, and to refill
 const K = 2.6;                   // vertical squash for ring-ring collisions
 const NOZ = [TANK.x + TANK.w * 0.2, TANK.x + TANK.w * 0.8];
-const PEGCOL = ['#ff3b5c', '#3a86ff'];
+const PEGCOL = ['#ff3b5c', '#3a86ff', '#ffc61a', '#2ec46b'];   // red, blue, yellow, green
+const NEUTRAL_IN_COLOUR = ['#ffffff', '#c9b6ff'];   // any-colour rings, when coloured rings share the tank
 const RCOL = ['#ffd23f', '#3bceac', '#ff8c42', '#b388ff', '#4cc9f0', '#90be6d', '#ffffff', '#ff7eb6', '#f9f871'];
 
-const LEVELS = [
-  { name: 'Warm Up', par: 45, rings: [null,null,null,null,null,null],
-    pegs: [{x:.36,tip:.34,base:.62},{x:.64,tip:.34,base:.62}] },
-  { name: 'Three Peaks', par: 75, rings: [null,null,null,null,null,null,null,null],
-    pegs: [{x:.27,tip:.42,base:.68},{x:.5,tip:.22,base:.5},{x:.73,tip:.42,base:.68}] },
-  { name: 'Drifter', par: 55, rings: [null,null,null,null,null],
-    pegs: [{x:.5,tip:.3,base:.6,move:{amp:.2,speed:.6}}] },
-  { name: 'Color Match', par: 70, rings: [0,1,0,1,0,1],
-    pegs: [{x:.33,tip:.34,base:.62,color:0},{x:.67,tip:.34,base:.62,color:1}] },
-  { name: 'Grand Finale', par: 110, rings: [0,1,null,0,1,null,0,1,null],
-    pegs: [{x:.24,tip:.44,base:.68,color:0},{x:.5,tip:.26,base:.5,move:{amp:.1,speed:.8}},{x:.76,tip:.44,base:.68,color:1}] },
-];
+const FLOORS = {
+  standard: [[0,75],[32,100],[80,70],[128,100],[160,75]],
+  deep:     [[0,40],[32,100],[80,72],[128,100],[160,40]],
+  shallow:  [[0,88],[32,100],[80,86],[128,100],[160,88]],
+  divider:  [[0,75],[32,100],[70,90],[77,48],[80,36],[83,48],[90,90],[128,100],[160,75]],
+  shelves:  [[0,70],[14,80],[22,80],[32,100],[48,90],[56,90],[80,70],[104,90],[112,90],[128,100],[138,80],[146,80],[160,70]],
+  pockets:  [[0,80],[22,100],[26,100],[32,97],[80,72],[128,97],[134,100],[138,100],[160,80]],
+  lopsided: [[0,50],[32,100],[80,68],[128,100],[160,94]],
+};
+let FLOOR = [], FLOOR_PEAKS = [], NOZY = [BOT, BOT], VALLEY_X = [0, 0];
+function setFloor(name){
+  FLOOR = FLOORS[name].map(([x,y])=>[TANK.x + x/160*TANK.w, BOT - (100-y)*7.6]);
+  // vertices that stick up (a ridge or peak) also push on rings
+  FLOOR_PEAKS = FLOOR.filter((v,i)=>{
+    if (i===0 || i===FLOOR.length-1) return false;
+    const a = FLOOR[i-1], b = FLOOR[i+1];
+    return v[1] < a[1] + (b[1]-a[1])*(v[0]-a[0])/(b[0]-a[0]) - 0.5;
+  });
+  NOZY = NOZ.map(x=>floorY(x));
+  const mid = TANK.x + TANK.w/2;
+  VALLEY_X = [0,1].map(side=>{
+    const vs = FLOOR.filter(v=> side ? v[0] > mid : v[0] < mid);
+    const lo = Math.max(...vs.map(v=>v[1])), at = vs.filter(v=>v[1] >= lo-1);
+    return at.reduce((a,v)=>a+v[0],0)/at.length;
+  });
+}
 
-// floor: V-shaped valleys that funnel rings onto the nozzles
-const FLOOR = [[TANK.x, BOT-190],[NOZ[0], BOT],[TANK.x+TANK.w/2, BOT-230],[NOZ[1], BOT],[TANK.x+TANK.w, BOT-190]];
+// rings: r b y g = that colour, a = any colour. 'L:' = every ring starts in the left valley
+const T = [.34,.62], S = [.48,.62], TALL = [.2,.52], OUT = [.3,.56];
+const peg = (x, [tip, base], color=null, move=null)=>({ x, tip, base, color, move });
+const mv = (amp, speed, phase=0)=>({ amp, speed, phase });
+const R_ = 0, B_ = 1, Y_ = 2, G_ = 3;
+const LEVELS = [
+  { name: 'Warm Up',       par: 45,  floor: 'standard', rings: 'aaaaaa',           pegs: [peg(.36,T), peg(.64,T)] },
+  { name: 'Three Peaks',   par: 75,  floor: 'standard', rings: 'aaaaaaaa',         pegs: [peg(.27,[.42,.68]), peg(.5,[.22,.5]), peg(.73,[.42,.68])] },
+  { name: 'Drifter',       par: 55,  floor: 'standard', rings: 'aaaaa',            pegs: [peg(.5,[.28,.57],null,mv(.2,.6))] },
+  { name: 'Colour Match',  par: 70,  floor: 'standard', rings: 'rbrbrb',           pegs: [peg(.33,T,R_), peg(.67,T,B_)] },
+  { name: 'Crossover',     par: 80,  floor: 'standard', rings: 'rbrbrb',           pegs: [peg(.33,T,B_), peg(.67,T,R_)] },
+  { name: 'Twin Drifters', par: 70,  floor: 'shallow',  rings: 'aaaaaa',           pegs: [peg(.36,T,null,mv(.12,.6)), peg(.64,T,null,mv(.12,.6,Math.PI))] },
+  { name: 'Short Stuff',   par: 90,  floor: 'deep',     rings: 'aaaaaaaaaa',       pegs: [peg(.3,S), peg(.5,[.44,.58]), peg(.7,S)] },
+  { name: 'Outfielders',   par: 70,  floor: 'standard', rings: 'aaaaaa',           pegs: [peg(.08,OUT), peg(.92,OUT)] },
+  { name: 'Three Colours', par: 80,  floor: 'lopsided', rings: 'rbyrby',           pegs: [peg(.3,T,R_), peg(.5,TALL,Y_), peg(.7,T,B_)] },
+  { name: 'Close Call',    par: 85,  floor: 'pockets',  rings: 'aaaaaa',           pegs: [peg(.27,[.4,.64]), peg(.73,[.4,.64])] },
+  { name: 'Pendulum',      par: 100, floor: 'shallow',  rings: 'aaaaaaaa',         pegs: [peg(.28,T), peg(.5,[.26,.52],null,mv(.14,1.1)), peg(.72,T)] },
+  { name: 'One Side',      par: 110, floor: 'divider',  rings: 'L:aaaaaaaa',       pegs: [peg(.6,T), peg(.76,[.4,.64])] },
+  { name: 'Wide Spread',   par: 110, floor: 'standard', rings: 'rbaarbaarb',       pegs: [peg(.08,OUT,R_), peg(.38,T), peg(.62,T), peg(.92,OUT,B_)] },
+  { name: 'Colour Swap',   par: 115, floor: 'shelves',  rings: 'brybrybry',        pegs: [peg(.3,T,Y_), peg(.5,TALL,R_), peg(.7,T,B_)] },
+  { name: 'Skyline',       par: 100, floor: 'deep',     rings: 'aaaaaaaaaa',       pegs: [peg(.27,[.46,.68]), peg(.42,[.18,.5]), peg(.58,[.3,.58]), peg(.73,[.46,.68])] },
+  { name: 'Hot Seat',      par: 110, floor: 'pockets',  rings: 'brbrbrbr',         pegs: [peg(.22,[.4,.62],R_), peg(.78,[.4,.62],B_)] },
+  { name: 'Rush Hour',     par: 120, floor: 'shallow',  rings: 'aaaaaaaaa',        pegs: [peg(.3,T,null,mv(.06,.7)), peg(.5,[.26,.52],null,mv(.1,.9,2)), peg(.7,T,null,mv(.06,.7,4))] },
+  { name: 'Four Colours',  par: 150, floor: 'lopsided', rings: 'rygbrygbrygb',     pegs: [peg(.26,T,R_), peg(.42,[.24,.52],Y_), peg(.58,[.24,.52],G_), peg(.74,T,B_)] },
+  { name: 'Crowded Tank',  par: 170, floor: 'shelves',  rings: 'rbaraabrabarab',   pegs: [peg(.24,S,R_), peg(.4,[.44,.58]), peg(.6,[.44,.58]), peg(.76,S,B_)] },
+  { name: 'Grand Finale',  par: 200, floor: 'divider',  rings: 'rygbrygbrygbrygb', pegs: [peg(.08,OUT,R_), peg(.36,[.26,.5],Y_,mv(.05,.8)), peg(.64,[.26,.5],G_,mv(.05,.8,Math.PI)), peg(.92,OUT,B_)] },
+];
+const RING_CODE = { a:null, r:R_, b:B_, y:Y_, g:G_ };
+
 function floorY(x){
   for (let i=0;i<FLOOR.length-1;i++){
     const a=FLOOR[i], b=FLOOR[i+1];
@@ -176,14 +218,21 @@ function shade(hex, f){
 
 function loadLevel(i){
   lvlIdx = i; const L = LEVELS[i];
+  setFloor(L.floor);
   pegs = L.pegs.map(p=>({ bx: TANK.x+p.x*TANK.w, x: TANK.x+p.x*TANK.w,
     tipY: TANK.y+p.tip*TANK.h, baseY: TANK.y+p.base*TANK.h,
-    color: p.color==null?null:p.color, move: p.move||null }));
-  let n=0;
-  rings = L.rings.map((m,k)=>{
-    const col = m==null ? RCOL[(n++)%RCOL.length] : PEGCOL[m];
-    const side = k%2;
-    return { x: NOZ[side] + (Math.random()-.5)*160, y: BOT-TH-20-Math.floor(k/2)*34,
+    color: p.color, move: p.move }));
+  for (const p of pegs) if (p.move) p.x = p.bx + p.move.amp*TANK.w*Math.sin(p.move.phase);
+  let codes = L.rings, leftOnly = false;
+  if (codes.startsWith('L:')){ leftOnly = true; codes = codes.slice(2); }
+  const coloured = /[rbyg]/.test(codes), neutral = coloured ? NEUTRAL_IN_COLOUR : RCOL;
+  let n = 0; const perSide = [0,0];
+  rings = [...codes].map((c,k)=>{
+    const m = RING_CODE[c], col = m==null ? neutral[(n++)%neutral.length] : PEGCOL[m];
+    const side = leftOnly ? 0 : k%2, layer = perSide[side]++;
+    const x = VALLEY_X[side] + ((layer%3)-1)*70 + (Math.random()-.5)*20;
+    const ground = Math.min(floorY(x-40), floorY(x), floorY(x+40));
+    return { x, y: ground - TH - 30 - Math.floor(layer/3)*40,
       vx:0, vy:0, py:0, phi:(Math.random()-.5)*.4, vphi:0, rot:0, w:0, touching:0,
       match:m, col, dark:shade(col,.62), peg:null, seed:Math.random()*100 };
   });
@@ -391,15 +440,17 @@ function ringVsStatic(r, S){
       const [qx,qy,u] = closestOnSeg(ex,ey,A[0],A[1],B[0],B[1]);
       const L = Math.hypot(B[0]-A[0], B[1]-A[1]), lnx = (B[1]-A[1])/L, lny = -(B[0]-A[0])/L;
       let nx = ex-qx, ny = ey-qy, dist;
-      if (u>0 && u<1){ dist = nx*lnx + ny*lny; nx = lnx; ny = lny; }
+      if (u>0 && u<1){ dist = nx*lnx + ny*lny; nx = lnx; ny = lny; if (dist < -S.h - 40) continue; }   // far behind this face = the other side of a ridge, not under it
       else { dist = Math.hypot(nx,ny); if (dist<0.01) continue; nx/=dist; ny/=dist; if (nx*lnx+ny*lny < 0) continue; }
       addContact(r, null, qx, qy, nx, ny, S.h - dist, mu);
     }
   }
   // the hump's peak poking into the middle of a ring
-  const V = FLOOR[2], [qx,qy] = closestOnSeg(V[0],V[1],S.x0,S.y0,S.x1,S.y1);
-  const d = Math.hypot(qx-V[0], qy-V[1]);
-  if (d > 0.01 && qy < V[1]) addContact(r, null, V[0], V[1], (qx-V[0])/d, (qy-V[1])/d, S.h - d, mu);
+  for (const V of FLOOR_PEAKS){
+    const [qx,qy] = closestOnSeg(V[0],V[1],S.x0,S.y0,S.x1,S.y1);
+    const d = Math.hypot(qx-V[0], qy-V[1]);
+    if (d > 0.01 && qy < V[1]) addContact(r, null, V[0], V[1], (qx-V[0])/d, (qy-V[1])/d, S.h - d, mu);
+  }
 }
 
 // The ring's hole: how far its inner edge reaches from the centre along the
@@ -522,7 +573,7 @@ function stepRings(dt){
     r.vphi += Math.sin(t*1.7 + r.seed*3)*0.8*dt;
     for (let k=0;k<2;k++){
       const j = jets[k]; if (j.s < 0.01) continue;
-      const dy = BOT - r.y; if (dy < 0) continue;
+      const dy = NOZY[k] - r.y; if (dy < 0) continue;
       const w = JET_W0 + dy*JET_SPREAD, dx = r.x - NOZ[k];
       const inf = Math.exp(-(dx*dx)/(w*w)) * Math.exp(-dy/JET_REACH);
       const f = j.s*inf*JET;
@@ -599,7 +650,7 @@ function stepRings(dt){
 
 function step(dt){
   t += dt; timer += dt;
-  for (const p of pegs) if (p.move) p.x = p.bx + p.move.amp*TANK.w*Math.sin(t*p.move.speed);
+  for (const p of pegs) if (p.move) p.x = p.bx + p.move.amp*TANK.w*Math.sin(t*p.move.speed + p.move.phase);
 
   // tilt: full 360 deg. Gravity always points at the real ground.
   const kb = keys.ArrowLeft || keys.ArrowRight;
@@ -625,7 +676,7 @@ function step(dt){
   // bubbles
   for (let k=0;k<2;k++){
     const s = jets[k].s;
-    if (Math.random() < s*dt*110) bubbles.push({ x:NOZ[k]+(Math.random()-.5)*24, y:BOT-14, r:3+Math.random()*9*s,
+    if (Math.random() < s*dt*110) bubbles.push({ x:NOZ[k]+(Math.random()-.5)*24, y:NOZY[k]-14, r:3+Math.random()*9*s,
       vx:(Math.random()-.5)*120, vy:-350-Math.random()*350*s, ph:Math.random()*6 });
   }
   if (Math.random() < dt*1.5){ const x = TANK.x+40+Math.random()*(TANK.w-80); bubbles.push({x, y:floorY(x)-4, r:2+Math.random()*3, vx:0, vy:-60, ph:Math.random()*6}); }
@@ -662,6 +713,10 @@ function drawRing(r, part){
   if (part){ ctx.beginPath(); if (part<0) ctx.rect(-R-12,-R-24,2*R+24,R+24); else ctx.rect(-R-12,0,2*R+24,R+30); ctx.clip(); }
   ctx.fillStyle = r.dark; annulus(0, band, R, ry, HOLE/R);
   ctx.fillStyle = r.col;  annulus(0, 0, R, ry, HOLE/R);
+  if (r.peg && r.peg.color!=null && r.peg.color!==r.match){   // wrong peg: pulse red
+    ctx.strokeStyle = `rgba(255,40,60,${0.5+0.5*Math.sin(t*8)})`; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.ellipse(0, 0, R+3, ry+3, 0, 0, Math.PI*2); ctx.stroke();
+  }
   ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 3.5; ctx.lineCap='round';
   ctx.beginPath(); ctx.ellipse(0, 0, R-8, Math.max(2, ry-ry*0.17), 0, Math.PI*1.08, Math.PI*1.62); ctx.stroke();
   ctx.restore();
@@ -721,14 +776,14 @@ function draw(){
   ctx.strokeStyle='#f0b85c'; ctx.lineWidth=5; ctx.beginPath(); FLOOR.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y)); ctx.stroke();
   // nozzles
   for (let k=0;k<2;k++){
-    const x = NOZ[k], on = jets[k].s;   // glow: narrow core fading upward
+    const x = NOZ[k], NY = NOZY[k], on = jets[k].s;   // glow: narrow core fading upward
     ctx.fillStyle = '#4a5568';
-    ctx.beginPath(); ctx.moveTo(x-30,BOT+4); ctx.lineTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+30,BOT+4); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x-30,NY+20); ctx.lineTo(x-12,NY-16); ctx.lineTo(x+12,NY-16); ctx.lineTo(x+30,NY+20); ctx.fill();
     if (on>0.02){
-      const jg = ctx.createLinearGradient(0,BOT-16,0,BOT-460);
+      const jg = ctx.createLinearGradient(0,NY-16,0,NY-460);
       jg.addColorStop(0,`rgba(255,255,255,${0.45*on})`); jg.addColorStop(1,'rgba(255,255,255,0)');
       ctx.fillStyle = jg;
-      ctx.beginPath(); ctx.moveTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+75,BOT-420); ctx.lineTo(x-75,BOT-420); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x-12,NY-16); ctx.lineTo(x+12,NY-16); ctx.lineTo(x+75,NY-420); ctx.lineTo(x-75,NY-420); ctx.fill();
     }
   }
   pegs.forEach(drawPedestal);
@@ -887,7 +942,7 @@ loadLevel(0); buildLevels(); $('ver').textContent = VERSION;
 requestAnimationFrame(frame);
 
 // test hook
-window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, setJet(v){JET=v;}, noz:NOZ, loadLevel, startLevel, step, landedCount };
+window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, levels:LEVELS, floorY, get floorPeaks(){return FLOOR_PEAKS;}, get valleyX(){return VALLEY_X;}, get floor(){return FLOOR;}, setJet(v){JET=v;}, noz:NOZ, loadLevel, startLevel, step, landedCount };
 </script>
 </body>
 </html>
