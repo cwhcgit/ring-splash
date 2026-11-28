@@ -49,7 +49,7 @@
 <div id="title" class="ov">
   <div class="panel">
     <h1>Ring Splash</h1>
-    <p>Tap or hold the <b>left</b> and <b>right</b> sides to pump water.<br>
+    <p>Tap the <b>left</b> and <b>right</b> sides to pump: each press squirts one burst of water.<br>
        <b>Tilt</b> the phone to steer the rings. Hook every ring on a peg!</p>
     <div id="levels"></div>
     <button id="playBtn" class="big">Play</button>
@@ -92,7 +92,10 @@ const TANK = { x: 170, y: 84, w: 1260, h: 770 };
 const BOT = TANK.y + TANK.h;
 const R = 46, HOLE = 28, TH = 13, PEGW = 7;
 const CATCH = HOLE;              // how centered a ring must be to thread
-const G = 400, DRAG = 2.1, JET = 3400;
+const G = 400, DRAG = 2.1;
+let JET = 6500;
+const JET_W0 = 62, JET_SPREAD = 0.22, JET_REACH = 330;   // core width at the nozzle, how fast it widens, how far it carries
+const BURST = 0.35, REFILL = 0.3;   // seconds of water per press, and to refill
 const K = 2.6;                   // vertical squash for ring-ring collisions
 const NOZ = [TANK.x + TANK.w * 0.2, TANK.x + TANK.w * 0.8];
 const PEGCOL = ['#ff3b5c', '#3a86ff'];
@@ -156,7 +159,7 @@ addEventListener('resize', resize);
 // ---------- State ----------
 let state = 'title', lvlIdx = 0, pegs = [], rings = [], bubbles = [];
 let t = 0, timer = 0, pumps = 0, settle = 0;
-const jets = [0,1].map(()=>({ held:false, s:0, p:1, empty:false }));
+const jets = [0,1].map(()=>({ held:false, s:0, p:1 }));
 let gx = 0, gy = G;
 let tilt = 0, keyTilt = 0, tiltOn = true, tiltFlip = false, soundOn = true;
 let rawAngle = 0, neutral = 0, haveMotion = false;
@@ -185,7 +188,7 @@ function loadLevel(i){
       match:m, col, dark:shade(col,.62), peg:null, seed:Math.random()*100 };
   });
   t=0; timer=0; pumps=0; settle=0; bubbles=[];
-  jets.forEach(j=>{ j.s=0; j.p=1; j.empty=false; });
+  jets.forEach(j=>{ j.s=0; j.p=1; });
 }
 
 // ---------- Input ----------
@@ -198,7 +201,6 @@ function updateHeld(){
   jets.forEach((j,k)=>{
     if (h[k] && !j.held && state==='play'){ pumps++; }
     j.held = h[k];
-    if (!h[k] && j.empty && j.p>0.2) j.empty=false;
   });
 }
 cv.addEventListener('pointerdown', e=>{
@@ -495,11 +497,11 @@ function stepRings(dt){
     for (let k=0;k<2;k++){
       const j = jets[k]; if (j.s < 0.01) continue;
       const dy = BOT - r.y; if (dy < 0) continue;
-      const w = 105 + dy*0.38, dx = r.x - NOZ[k];
-      const inf = Math.exp(-(dx*dx)/(w*w)) * Math.pow(Math.max(0, 1-dy/(TANK.h*1.15)), 0.8);
+      const w = JET_W0 + dy*JET_SPREAD, dx = r.x - NOZ[k];
+      const inf = Math.exp(-(dx*dx)/(w*w)) * Math.exp(-dy/JET_REACH);
       const f = j.s*inf*JET*(r.peg?0.8:1);
       ay -= f;
-      ax += ((dx/w)*f*0.35 + Math.sin(t*3.1 + r.seed)*f*0.22) * (r.peg?0.4:1);
+      ax += ((dx/w)*f*0.3 + Math.sin(t*3.1 + r.seed)*f*0.15) * (r.peg?0.4:1);
       r.w += ((dx/w)*3 + (Math.random()-0.5)*20) * j.s*inf*dt;   // the jet hits one side harder
       if (!r.peg) r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
     }
@@ -582,13 +584,14 @@ function step(dt){
   tilt = wrapA(tilt + wrapA(target - tilt)*Math.min(1, dt*12));
   gx = Math.sin(tilt)*G; gy = Math.cos(tilt)*G;
 
-  // jets / pump pressure
+  // pumps work like the toy's bellows: a press squeezes out one limited
+  // burst (shorter if you let go early); holding adds nothing once it's
+  // empty, and it only refills while the button is up
   for (const j of jets){
-    const want = j.held && !j.empty ? 1 : 0;
-    j.s += (want - j.s) * Math.min(1, dt*(want>j.s?16:7));
-    if (j.held && !j.empty){ j.p -= dt/1.4; if (j.p<=0){ j.p=0; j.empty=true; } }
-    else j.p = Math.min(1, j.p + dt*0.6);
-    if (!j.held && j.empty && j.p>0.2) j.empty=false;
+    const pushing = j.held && j.p > 0;
+    j.s += ((pushing ? 1 : 0) - j.s) * Math.min(1, dt*(pushing ? 28 : 14));
+    if (pushing) j.p = Math.max(0, j.p - dt/BURST);
+    else if (!j.held) j.p = Math.min(1, j.p + dt/REFILL);
   }
 
   stepRings(dt);
@@ -691,14 +694,14 @@ function draw(){
   ctx.strokeStyle='#f0b85c'; ctx.lineWidth=5; ctx.beginPath(); FLOOR.forEach(([x,y],i)=>i?ctx.lineTo(x,y):ctx.moveTo(x,y)); ctx.stroke();
   // nozzles
   for (let k=0;k<2;k++){
-    const x = NOZ[k], on = jets[k].s;
+    const x = NOZ[k], on = jets[k].s;   // glow: narrow core fading upward
     ctx.fillStyle = '#4a5568';
     ctx.beginPath(); ctx.moveTo(x-30,BOT+4); ctx.lineTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+30,BOT+4); ctx.fill();
     if (on>0.02){
-      const jg = ctx.createLinearGradient(0,BOT-16,0,BOT-420);
+      const jg = ctx.createLinearGradient(0,BOT-16,0,BOT-460);
       jg.addColorStop(0,`rgba(255,255,255,${0.45*on})`); jg.addColorStop(1,'rgba(255,255,255,0)');
       ctx.fillStyle = jg;
-      ctx.beginPath(); ctx.moveTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+120,BOT-420); ctx.lineTo(x-120,BOT-420); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x-12,BOT-16); ctx.lineTo(x+12,BOT-16); ctx.lineTo(x+75,BOT-420); ctx.lineTo(x-75,BOT-420); ctx.fill();
     }
   }
   pegs.forEach(drawPedestal);
@@ -730,11 +733,11 @@ function draw(){
 
   // pump buttons + pressure gauges
   for (let k=0;k<2;k++){
-    const cx = k? W-85 : 85, j = jets[k], pressed = j.held && !j.empty;
+    const cx = k? W-85 : 85, j = jets[k], pressed = j.held;
     // gauge
     ctx.fillStyle='rgba(0,0,0,.25)'; rr(cx-16,200,32,380,16); ctx.fill();
     const ph = 372*j.p;
-    ctx.fillStyle = j.empty ? '#ffb3b3' : (j.p>0.3 ? '#7fe3ff' : '#ffd23f');
+    ctx.fillStyle = j.p < 0.05 ? '#ffb3b3' : (j.p>0.3 ? '#7fe3ff' : '#ffd23f');
     rr(cx-12,576-ph,24,ph,12); ctx.fill();
     // button
     ctx.fillStyle='#7a1424'; ctx.beginPath(); ctx.arc(cx,700+8,60,0,Math.PI*2); ctx.fill();
@@ -853,7 +856,7 @@ loadLevel(0); buildLevels();
 requestAnimationFrame(frame);
 
 // test hook
-window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, loadLevel, startLevel, step, landedCount };
+window.__game = { get state(){return state;}, get rings(){return rings;}, get pegs(){return pegs;}, jets, keys, get tilt(){return tilt;}, setJet(v){JET=v;}, noz:NOZ, loadLevel, startLevel, step, landedCount };
 </script>
 </body>
 </html>

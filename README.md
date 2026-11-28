@@ -10,7 +10,7 @@ in Chrome, not inside another app's viewer.)
 
 ## Controls
 
-- Tap or hold the left or right side of the screen to pump that side's jet
+- Tap the left or right side of the screen to pump that side: each press squirts one burst of water, and the pump refills when you let go
 - Tilt the phone to steer the rings
 - Keyboard: A / L to pump, arrow keys to tilt, Esc for the menu
 
