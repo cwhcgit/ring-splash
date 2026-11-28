@@ -86,13 +86,12 @@
 
 <script>
 "use strict";
-const VERSION = "v0.7";   // bump on every push so testers can see which build they have
+const VERSION = "v0.8";   // bump on every push so testers can see which build they have
 // ---------- World constants ----------
 const W = 1600, H = 900;
 const TANK = { x: 170, y: 84, w: 1260, h: 770 };
 const BOT = TANK.y + TANK.h;
 const R = 46, HOLE = 28, TH = 13, PEGW = 7;
-const CATCH = HOLE;              // how centered a ring must be to thread
 const G = 400, DRAG = 2.1;
 let JET = 6500;
 const JET_W0 = 62, JET_SPREAD = 0.22, JET_REACH = 330;   // core width at the nozzle, how fast it widens, how far it carries
@@ -326,8 +325,7 @@ function updateAudio(){
 }
 
 // ---------- Simulation ----------
-function capture(r, p){
-  r.peg = p;
+function threadFeedback(){
   plink(700 + Math.random()*500);
   try{ navigator.vibrate && navigator.vibrate(18); }catch(e){}
 }
@@ -340,8 +338,7 @@ function capture(r, p){
 // rings topple, pivot on peg tips and lever each other naturally.
 const I_RING = 1.0*R*R;          // rotational inertia, including the water it drags along
 const INV_I = 1/I_RING;
-const MAXT = 0.12;               // how far a threaded ring can cock on its peg (rad)
-const SLOP = 0.4;
+              const SLOP = 0.4;
 let contacts = [];
 
 function shape(r){
@@ -405,9 +402,38 @@ function ringVsStatic(r, S){
   if (d > 0.01 && qy < V[1]) addContact(r, null, V[0], V[1], (qx-V[0])/d, (qy-V[1])/d, S.h - d, mu);
 }
 
-function ringVsPegs(r, S){
+// The ring's hole: how far its inner edge reaches from the centre along the
+// ring's axis. Lying flat that's the whole hole. As the ring tumbles toward
+// facing you, a vertical peg must cross its plane ever more steeply, so the
+// opening it can pass through shrinks, closing at about 75 degrees.
+function holeHalf(r){ return HOLE*Math.min(1, Math.abs(Math.cos(r.phi))*1.3); }
+// Seen edge-on a ring is two pieces of rim with the hole between them: a
+// capsule across the ring on each side of the hole.
+function rims(r, S){
+  const gi = holeHalf(r), rr = (R - gi)/2, m = (R + gi)/2, hv = Math.max(0, S.h - rr);
+  const ux = Math.cos(r.rot), uy = Math.sin(r.rot), vx = -uy, vy = ux;
+  return [-1,1].map(sg=>{
+    const cx = r.x + sg*m*ux, cy = r.y + sg*m*uy;
+    return { rr, cx, cy, x0: cx - vx*hv, y0: cy - vy*hv, x1: cx + vx*hv, y1: cy + vy*hv };
+  });
+}
+// Does a peg pass through this ring's hole right now? Pure observation of the
+// geometry, used for scoring, drawing and sound; it never moves anything.
+function threadedOn(r){
+  const ux = Math.cos(r.rot), uy = Math.sin(r.rot);
+  if (Math.abs(ux) < 0.2) return null;
+  const gi = holeHalf(r);
   for (const p of pegs){
-    // pedestal dome: also the floor a threaded stack rests on
+    const sa = (p.x - r.x)/ux, cy = r.y + sa*uy;          // where the peg crosses the ring's axis
+    if (Math.abs(sa) < gi && cy > p.tipY && cy < p.baseY + 40){ r.pegS = sa; return p; }
+  }
+  return null;
+}
+
+function ringVsPegs(r, S){
+  const RM = rims(r, S);
+  for (const p of pegs){
+    // pedestal dome: also what a stack on the peg rests on
     const pcx = p.x, pcy = p.baseY + 30, pr = 32;
     {
       const [qx,qy] = closestOnSeg(pcx,pcy,S.x0,S.y0,S.x1,S.y1);
@@ -415,14 +441,13 @@ function ringVsPegs(r, S){
       const pen = S.h + pr - d - (r.peg===p ? bobGap(r) : 0);
       addContact(r, null, pcx+nx*pr, pcy+ny*pr, nx, ny, pen, 0.12, p.vx, 0);   // round, smooth dome
     }
-    if (r.peg === p) continue;                       // the peg runs through the hole
-    const dx = r.x - p.x;
-    const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.6 && Math.abs(Math.sin(r.rot)) < 0.35;
-    if (!r.peg && ok && Math.abs(dx) < CATCH && r.y < p.tipY + 4) continue;   // lined up: let it thread
-    const [c1x,c1y,c2x,c2y] = segSeg(S.x0,S.y0,S.x1,S.y1, p.x,p.tipY, p.x,p.baseY);
-    let nx = c1x-c2x, ny = c1y-c2y, d = Math.hypot(nx,ny);
-    if (d < 0.01){ nx = Math.sign(dx)||1; ny = 0; } else { nx/=d; ny/=d; }
-    addContact(r, null, c2x+nx*PEGW, c2y+ny*PEGW, nx, ny, S.h + PEGW - d, 0.05, p.vx, 0);   // polished peg: nothing leans on it
+    // the peg against each piece of rim: inside the hole it touches neither
+    for (const q of RM){
+      const [c1x,c1y,c2x,c2y] = segSeg(q.x0,q.y0,q.x1,q.y1, p.x,p.tipY, p.x,p.baseY);
+      let nx = c1x-c2x, ny = c1y-c2y, d = Math.hypot(nx,ny);
+      if (d < 0.01){ nx = Math.sign(q.cx - p.x) || 1; ny = 0; } else { nx /= d; ny /= d; }
+      addContact(r, null, c2x+nx*PEGW, c2y+ny*PEGW, nx, ny, q.rr + PEGW - d, 0.05, p.vx, 0);   // polished peg
+    }
   }
 }
 
@@ -500,11 +525,11 @@ function stepRings(dt){
       const dy = BOT - r.y; if (dy < 0) continue;
       const w = JET_W0 + dy*JET_SPREAD, dx = r.x - NOZ[k];
       const inf = Math.exp(-(dx*dx)/(w*w)) * Math.exp(-dy/JET_REACH);
-      const f = j.s*inf*JET*(r.peg?0.8:1);
+      const f = j.s*inf*JET;
       ay -= f;
-      ax += ((dx/w)*f*0.3 + Math.sin(t*3.1 + r.seed)*f*0.15) * (r.peg?0.4:1);
+      ax += (dx/w)*f*0.3 + Math.sin(t*3.1 + r.seed)*f*0.15;
       r.w += ((dx/w)*3 + (Math.random()-0.5)*20) * j.s*inf*dt;   // the jet hits one side harder
-      if (!r.peg) r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
+      r.vphi += (Math.random()-0.5)*j.s*inf*160*dt;
     }
     r.vx += ax*dt; r.vy += ay*dt;
     const d = Math.exp(-DRAG*dt); r.vx *= d; r.vy *= d;
@@ -514,7 +539,7 @@ function stepRings(dt){
     // A real ring is round: standing up on its rim (axis along gravity), its
     // centre of gravity is never quite over the contact, so it leans over
     // toward lying down. Stronger while it rests on something.
-    if (!r.peg){
+    {
       let rel = r.rot + tilt; rel -= Math.PI*Math.round(rel/Math.PI);       // 0 = lying across gravity
       const up = Math.abs(rel);                                              // pi/2 = standing up
       if (up > 0.6){
@@ -524,6 +549,8 @@ function stepRings(dt){
     }
     r.w *= Math.exp(-2.5*dt);
   }
+
+  for (const r of rings) r.peg = threadedOn(r);
 
   // contacts
   contacts = [];
@@ -553,21 +580,19 @@ function stepRings(dt){
     // and much faster when it's resting on something
     const k = r.touching ? 16 : 5;
     r.vphi += -Math.sin(2*r.phi)*k*dt; r.vphi *= Math.exp(-2.5*dt); r.phi += r.vphi*dt;
-    if (r.peg) r.phi += (Math.round(r.phi/Math.PI)*Math.PI - r.phi)*Math.min(1,dt*6);
 
+    // a peg through the hole physically stops the ring tumbling past it:
+    // the opening can't close tighter than the peg
+    const was = r.peg;
+    r.peg = threadedOn(r);
     if (r.peg){
-      // the peg runs through the hole: it can slide along the peg, rattle in
-      // the hole's clearance and cock a little, and comes off past the tip
-      const p = r.peg, lim = HOLE - PEGW - 2, rel = r.x - p.x;
-      if (Math.abs(rel) > lim){ r.x = p.x + Math.sign(rel)*lim; if (Math.sign(r.vx - p.vx)===Math.sign(rel)) r.vx = p.vx; }
-      const dr = r.rot - Math.PI*Math.round(r.rot/Math.PI);
-      if (Math.abs(dr) > MAXT){ r.rot -= dr - Math.sign(dr)*MAXT; if (Math.sign(r.w)===Math.sign(dr)) r.w = 0; }
-      if (r.y < p.tipY - 6) r.peg = null;
-    } else {
-      for (const p of pegs){
-        const ok = (p.color==null || r.match===p.color) && Math.abs(Math.sin(r.phi)) < 0.6 && Math.abs(Math.sin(r.rot)) < 0.35;
-        if (ok && Math.abs(r.x - p.x) < CATCH && r.py <= p.tipY && r.y > p.tipY){ capture(r,p); break; }
+      const need = Math.min(1, (Math.abs(r.pegS) + PEGW + 1)/(1.3*HOLE));
+      const base = Math.round(r.phi/Math.PI)*Math.PI, dev = r.phi - base;
+      if (Math.abs(Math.cos(r.phi)) < need){
+        r.phi = base + Math.sign(dev)*Math.acos(need);
+        if (Math.sign(r.vphi) === Math.sign(dev)) r.vphi = 0;
       }
+      if (!was && t - (r.fbT||-9) > 0.6){ r.fbT = t; threadFeedback(); }
     }
   }
 }
@@ -612,12 +637,13 @@ function step(dt){
   if (bubbles.length > 400) bubbles.splice(0, bubbles.length-400);
 
   // win check
-  const allIn = rings.every(r=>r.peg && r.y > r.peg.tipY + TH && Math.abs(r.vy) < 40);
+  const allIn = rings.every(r=>scores(r) && Math.abs(r.vy) < 40);
   settle = allIn ? settle + dt : 0;
   if (settle > 0.8) winLevel();
 }
 
-function landedCount(){ return rings.filter(r=>r.peg && r.y > r.peg.tipY + TH).length; }
+function scores(r){ return !!r.peg && (r.peg.color==null || r.peg.color===r.match) && r.y > r.peg.tipY + TH; }
+function landedCount(){ return rings.filter(scores).length; }
 
 // ---------- Drawing ----------
 function rr(x,y,w,h,r){ ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x,y,w,h,r) : ctx.rect(x,y,w,h); }
